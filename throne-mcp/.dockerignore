@@ -1,0 +1,20 @@
+# The Dockerfile COPYs exactly two files: requirements.txt and
+# throne_mcp_server.py. Everything below is context weight only.
+# Do NOT add either of those two files here.
+
+__pycache__/
+*.pyc
+*.pyo
+
+# Local patch backups - these are prior copies of the server source, and
+# shipping one into the build context risks confusion about what is live.
+*.bak-*
+
+# Tests and tooling: run on the workstation, never inside the image.
+test_*.py
+probe_*.py
+apply-fixes-*.py
+
+# Docs and deploy scripts.
+*.md
+*.ps1
