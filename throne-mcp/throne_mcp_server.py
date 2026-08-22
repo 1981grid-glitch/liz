@@ -82,6 +82,11 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 _SCOPE = "https://graph.microsoft.com/.default"
 _UPLOAD_SIMPLE_MAX = 4 * 1024 * 1024   # >4MB must use an upload session
 _UPLOAD_CHUNK = 5 * 320 * 1024         # 1.6MB; Graph requires multiples of 320KiB
+# Mail attachments are a SEPARATE Graph ceiling from drive uploads: the plain
+# POST /attachments endpoint caps at 3MB, and above that an attachment upload
+# session is required (Graph's own hard ceiling for those is 150MB).
+_ATTACH_SIMPLE_MAX = 3 * 1024 * 1024   # >3MB must use an attachment upload session
+_ATTACH_MAX = 150 * 1024 * 1024        # Graph ceiling for attachment upload sessions
 
 def _build_graph_credential() -> CertificateCredential:
     """Graph client-credentials cert. Prefer Key Vault (managed identity) in Azure;
@@ -651,7 +656,7 @@ def onedrive_list(user_id: str, item_id: str = "root") -> list[dict]:
     if not _auth_ok():
         return [{"error": "unauthorized"}]
     seg = "root" if item_id == "root" else f"items/{item_id}"
-    r = _g("GET", f"/users/{user_id}/drive/{seg}/children")
+    r = _g("GET", f"/users/{_mbx(user_id)}/drive/{seg}/children")
     r.raise_for_status()
     return [{"name": i["name"], "id": i["id"], "folder": "folder" in i}
             for i in r.json().get("value", [])]
@@ -662,7 +667,7 @@ def onedrive_read_file(user_id: str, item_id: str) -> str:
     """Read a user's OneDrive file text content by drive item id."""
     if not _auth_ok():
         return "unauthorized"
-    r = _g("GET", f"/users/{user_id}/drive/items/{item_id}/content")
+    r = _g("GET", f"/users/{_mbx(user_id)}/drive/items/{item_id}/content")
     if not r.is_success:
         return f"graph {r.status_code}: {r.text[:200]}"
     return r.text
@@ -674,7 +679,7 @@ def onedrive_write_file(user_id: str, path: str, content: str, overwrite: bool =
     if not _auth_ok():
         return {"error": "unauthorized"}
     conflict = "replace" if overwrite else "fail"
-    r = _g("PUT", f"/users/{user_id}/drive/root:/{path}:/content"
+    r = _g("PUT", f"/users/{_mbx(user_id)}/drive/root:/{path}:/content"
            f"?@microsoft.graph.conflictBehavior={conflict}",
            headers={"Content-Type": "application/octet-stream"}, content=content.encode())
     if not r.is_success:
@@ -699,7 +704,7 @@ def onedrive_write_binary(user_id: str, path: str, content_b64: str,
     if not data:
         return {"error": "refused: decoded content is empty"}
     conflict = "replace" if overwrite else "fail"
-    r = _g("PUT", f"/users/{user_id}/drive/root:/{path}:/content"
+    r = _g("PUT", f"/users/{_mbx(user_id)}/drive/root:/{path}:/content"
            f"?@microsoft.graph.conflictBehavior={conflict}",
            headers={"Content-Type": "application/octet-stream"}, content=data)
     if not r.is_success:
@@ -715,7 +720,7 @@ def onedrive_create_folder(user_id: str, parent_id: str, name: str) -> dict:
     """Create a folder in a user's OneDrive."""
     if not _auth_ok():
         return {"error": "unauthorized"}
-    r = _g("POST", f"/users/{user_id}/drive/items/{parent_id}/children",
+    r = _g("POST", f"/users/{_mbx(user_id)}/drive/items/{parent_id}/children",
            json={"name": name, "folder": {}, "@microsoft.graph.conflictBehavior": "fail"})
     if not r.is_success:
         return _graph_err(r)
@@ -730,7 +735,7 @@ def onedrive_delete(user_id: str, item_id: str, confirm: bool = False) -> dict:
         return {"error": "unauthorized"}
     if not confirm:
         return {"error": "refused: pass confirm=true to delete"}
-    r = _g("DELETE", f"/users/{user_id}/drive/items/{item_id}")
+    r = _g("DELETE", f"/users/{_mbx(user_id)}/drive/items/{item_id}")
     if not r.is_success:
         return _graph_err(r)
     _audit("onedrive_delete", f"{user_id}:{item_id}")
@@ -808,7 +813,7 @@ def send_mail(from_user_id: str, to: list[str], subject: str, body_html: str,
     requires a Client ID in the subject/body. client_id_ack must also be True (explicit human intent)."""
     if not _auth_ok():
         return {"error": "unauthorized"}
-        body_html = _normalize_body_html(body_html)
+    body_html = _normalize_body_html(body_html)
     if not client_id_ack:
         return {"error": "refused: set client_id_ack=true after confirming no consumer name in subject/body"}
     reason = _mail_guard(to, cc or [], subject, body_html)
@@ -849,6 +854,10 @@ _MAILBOX_ALIASES = {
     "zach":  "zach.eltzroth@adaptiveenterprisesllc.com",
     "admin": "admin@adaptiveenterprisesllc.com",
     "jeff":  "jeff.price@adaptiveenterprisesllc.com",
+    # Added 2026-08-22. Verified reachable app-only BEFORE adding (mailFolders returned
+    # 8 folders, Inbox 37 unread), so it is already in the Exchange scope group and this
+    # alias cannot become one of the "resolves fine then 403s" entries warned about above.
+    "careers": "careers@adaptiveenterprisesllc.com",
 }
 for _pair in os.environ.get("MAILBOX_ALIASES", "").split(","):
     if "=" in _pair:
@@ -940,7 +949,7 @@ def outlook_create_draft(mailbox: str, to: list[str], subject: str, body_html: s
     """Compose a DRAFT (not sent) in a mailbox. Returns the draft id + a webLink to review/send it."""
     if not _auth_ok():
         return {"error": "unauthorized"}
-        body_html = _normalize_body_html(body_html)
+    body_html = _normalize_body_html(body_html)
     block = _consumer_block(subject, body_html)
     if block:
         _audit("outlook_draft_BLOCKED", f"{mailbox}: {block}")
@@ -963,7 +972,7 @@ def outlook_update_draft(mailbox: str, message_id: str, subject: str | None = No
     """Edit an existing draft. Only the fields you pass are changed."""
     if not _auth_ok():
         return {"error": "unauthorized"}
-        body_html = _normalize_body_html(body_html)
+    body_html = _normalize_body_html(body_html)
     if _consumer_block(subject or "", body_html or ""):
         return {"error": "refused: consumer name present (§17)"}
     patch: dict = {}
@@ -1005,7 +1014,7 @@ def outlook_send(mailbox: str, to: list[str], subject: str, body_html: str,
     Client-ID rule); this is the general Outlook send."""
     if not _auth_ok():
         return {"error": "unauthorized"}
-        body_html = _normalize_body_html(body_html)
+    body_html = _normalize_body_html(body_html)
     if not confirm:
         return {"error": "refused: pass confirm=true to send"}
     block = _consumer_block(subject, body_html)
@@ -1029,7 +1038,7 @@ def outlook_reply(mailbox: str, message_id: str, body_html: str,
     """Reply (or reply-all) to a message. Requires confirm=True."""
     if not _auth_ok():
         return {"error": "unauthorized"}
-        body_html = _normalize_body_html(body_html)
+    body_html = _normalize_body_html(body_html)
     if not confirm:
         return {"error": "refused: pass confirm=true to send"}
     if _consumer_block("", body_html):
@@ -1422,12 +1431,18 @@ def calendar_list_events(mailbox: str = "zach", start: str | None = None,
 def calendar_create_event(mailbox: str, subject: str, start: str, end: str,
                           timezone: str | None = None, body_html: str = "",
                           location: str = "", attendees: list[str] | None = None,
-                          all_day: bool = False, confirm: bool = False) -> dict:
+                          all_day: bool = False, is_online_meeting: bool = False,
+                          confirm: bool = False) -> dict:
     """Create a calendar event. start/end are ISO local times ('2026-07-06T14:00:00').
-    Adding attendees SENDS INVITES -> requires confirm=True (no attendees = no confirm needed)."""
+    Adding attendees SENDS INVITES -> requires confirm=True (no attendees = no confirm needed).
+
+    is_online_meeting=True makes it a TEAMS MEETING: Graph provisions the meeting and
+    the join link is returned as `joinUrl` (and lands in the event body for attendees).
+    Graph cannot remove online-meeting info from an event once set, so this is
+    create-time only - it is deliberately not exposed on calendar_update_event."""
     if not _auth_ok():
         return {"error": "unauthorized"}
-        body_html = _normalize_body_html(body_html)
+    body_html = _normalize_body_html(body_html)
     if attendees and not confirm:
         return {"error": "refused: attendees send invites — pass confirm=true"}
     if _consumer_block(subject, body_html):
@@ -1444,12 +1459,28 @@ def calendar_create_event(mailbox: str, subject: str, start: str, end: str,
     if attendees:
         ev["attendees"] = [{"emailAddress": {"address": a}, "type": "required"}
                            for a in attendees]
+    if is_online_meeting:
+        ev["isOnlineMeeting"] = True
+        ev["onlineMeetingProvider"] = "teamsForBusiness"
     r = _g("POST", f"/users/{_mbx(mailbox)}/events", json=ev)
     if not r.is_success:
         return _graph_err(r)
     j = r.json()
     _audit("calendar_create", f"{_mbx(mailbox)}: {subject} @ {start}")
-    return {"ok": True, "id": j.get("id"), "webLink": j.get("webLink")}
+    out = {"ok": True, "id": j.get("id"), "webLink": j.get("webLink")}
+    if is_online_meeting:
+        om = j.get("onlineMeeting") or {}
+        out["isOnlineMeeting"] = bool(j.get("isOnlineMeeting"))
+        out["joinUrl"] = om.get("joinUrl")
+        if not om.get("joinUrl"):
+            # Graph accepts isOnlineMeeting on an event it cannot actually provision
+            # (Teams not licensed for the mailbox, or policy blocks it) and answers 201
+            # with no join link. Reporting a bare ok here would hand back a "Teams
+            # meeting" nobody can join, so say so explicitly.
+            out["warning"] = ("event created but Graph returned no joinUrl - the mailbox "
+                              "may not be Teams-licensed or policy blocks online meetings; "
+                              "the event exists but is NOT a Teams meeting")
+    return out
 
 
 @mcp.tool
@@ -1461,7 +1492,7 @@ def calendar_update_event(mailbox: str, event_id: str, subject: str | None = Non
     updates to them -> requires confirm=True to be safe."""
     if not _auth_ok():
         return {"error": "unauthorized"}
-        body_html = _normalize_body_html(body_html)
+    body_html = _normalize_body_html(body_html)
     if not confirm:
         return {"error": "refused: updates to events with attendees notify them — pass confirm=true"}
     tz = timezone or DEFAULT_TZ
@@ -2162,24 +2193,75 @@ def outlook_download_attachment(mailbox: str, message_id: str,
 @mcp.tool
 def outlook_add_attachment(mailbox: str, message_id: str, name: str, content_b64: str,
                            content_type: str | None = None) -> dict:
-    """Attach a file (base64 bytes) to an existing DRAFT message. Returns the attachment id."""
+    """Attach a file (base64 bytes) to an existing DRAFT message. Returns the attachment id.
+
+    Handles any size up to Graph's 150MB attachment ceiling: a plain POST under 3MB,
+    a resumable ATTACHMENT upload session above it. Note this is a different endpoint
+    and a different limit from the drive uploads `_upload_bytes` handles - the plain
+    /attachments endpoint rejects anything over 3MB, which is why large evaluation
+    PDFs and scanned reports used to fail here."""
     if not _auth_ok():
         return {"error": "unauthorized"}
     try:
-        base64.b64decode(content_b64, validate=True)
+        data = base64.b64decode(content_b64, validate=True)
     except Exception as e:
         return {"error": f"invalid base64 content: {e}"}
+    if not data:
+        return {"error": "refused: decoded content is empty"}
+    if len(data) > _ATTACH_MAX:
+        return {"error": f"refused: {len(data)} bytes exceeds Graph's "
+                         f"{_ATTACH_MAX} byte attachment ceiling"}
     upn = _mbx(mailbox)
-    att = {"@odata.type": "#microsoft.graph.fileAttachment", "name": name,
-           "contentBytes": content_b64}
+
+    if len(data) <= _ATTACH_SIMPLE_MAX:
+        att = {"@odata.type": "#microsoft.graph.fileAttachment", "name": name,
+               "contentBytes": content_b64}
+        if content_type:
+            att["contentType"] = content_type
+        r = _g("POST", f"/users/{upn}/messages/{message_id}/attachments", json=att)
+        if not r.is_success:
+            return _graph_err(r)
+        j = r.json()
+        _audit("outlook_add_attachment", f"{upn}:{message_id} +{name}")
+        return {"ok": True, "id": j.get("id"), "name": j.get("name"),
+                "bytes": len(data), "upload": "simple"}
+
+    # --- resumable attachment upload session (>3MB) ---
+    item = {"attachmentType": "file", "name": name, "size": len(data)}
     if content_type:
-        att["contentType"] = content_type
-    r = _g("POST", f"/users/{upn}/messages/{message_id}/attachments", json=att)
-    if not r.is_success:
-        return _graph_err(r)
-    j = r.json()
+        item["contentType"] = content_type
+    s = _g("POST", f"/users/{upn}/messages/{message_id}/attachments/createUploadSession",
+           json={"AttachmentItem": item})
+    if not s.is_success:
+        return _graph_err(s)
+    url = s.json()["uploadUrl"]
+    total = len(data)
+    last = None
+    # The session URL carries its own pre-authorization - sending our bearer token
+    # to it is both unnecessary and a token leak to a non-Graph host, so this goes
+    # out through bare httpx exactly like _upload_bytes does.
+    for start in range(0, total, _UPLOAD_CHUNK):
+        chunk = data[start:start + _UPLOAD_CHUNK]
+        end = start + len(chunk) - 1
+        last = httpx.put(url, content=chunk, timeout=120, headers={
+            "Content-Length": str(len(chunk)),
+            "Content-Range": f"bytes {start}-{end}/{total}",
+        })
+        if last.status_code not in (200, 201, 202):
+            return _graph_err(last)
+    # The final PUT answers 201 with the attachment id in the Location header; the
+    # body is often empty, so parsing it alone would drop the id on the floor.
+    att_id = None
+    try:
+        att_id = (last.json() or {}).get("id")
+    except Exception:
+        att_id = None
+    if not att_id:
+        m = re.search(r"Attachments\('([^']+)'\)", last.headers.get("Location", ""))
+        att_id = m.group(1) if m else None
     _audit("outlook_add_attachment", f"{upn}:{message_id} +{name}")
-    return {"ok": True, "id": j.get("id"), "name": j.get("name")}
+    return {"ok": True, "id": att_id, "name": name,
+            "bytes": total, "upload": "session"}
 
 
 # ---------------------------------------------------------------------------
