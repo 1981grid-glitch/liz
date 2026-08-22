@@ -1,0 +1,7 @@
+# Pinned to the fastmcp Throne already runs in production (2.14.7). The auth surface
+# used here -- OAuthProxy's constructor, TokenVerifier.verify_token, and the fact that
+# AccessToken.token is what get_access_token() hands a tool -- was verified by
+# introspecting THIS version's installed source, not the docs, which drift between
+# minors. Re-verify before moving the pin; see BUILD-NOTES section 2.
+fastmcp==2.14.7
+httpx==0.28.1
