@@ -1,0 +1,22 @@
+# The Dockerfile COPYs exactly two files: requirements.txt and
+# cartographer_mcp_server.py. Everything below is context weight only.
+# Do NOT add either of those two files here.
+
+__pycache__/
+*.pyc
+*.pyo
+
+# Local patch backups - prior copies of the server source; shipping one into the
+# build context risks confusion about what is live.
+*.bak-*
+
+# Tests and tooling: run on the workstation or in CI, never inside the image.
+test_*.py
+probe_*.py
+
+# Docs and deploy scripts.
+*.md
+*.ps1
+
+# Deploy scripts: run in Cloud Shell, never inside the image.
+scripts/
