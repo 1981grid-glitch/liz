@@ -312,11 +312,19 @@ Answers change the config, not the code, except where noted.
    the server can never exceed Zach's own access, which is the main safety property here.
    If PHI containment argues for narrower reach, the lever is `THRONE_SITE_ID` /
    `ONENOTE_SITE_ALIASES` — leave them unset and only `scope="me"` resolves.
-2. **Write access in v1?** Built, and gated behind `confirm=True` with read-after-write
-   verification. To ship read-only first, drop `Notes.ReadWrite.All` to `Notes.Read.All` in
-   `OAUTH_SCOPES`; the write tools then fail at Graph rather than needing a code change.
-   **Recommend shipping read-only first** — it halves the risk surface while the auth chain
-   is still unproven, and re-enabling is one env var.
+2. **Write access in v1?** **DECIDED 2026-08-23: read-write ships in v1.** Zach's call,
+   after the read-only-first recommendation was put to him. No code change — the shipped
+   `OAUTH_SCOPES` default is already `Notes.ReadWrite.All`, and the write tools are built.
+
+   What carries the risk instead of a narrowed scope: both write tools refuse without
+   `confirm=True`; `onenote_create_page` reads the page back and returns the authoritative
+   id rather than a remembered one; `onenote_append_page` captures the page text first and
+   proves every prior line survived the PATCH, returning `ok: False` with the lost lines if
+   not, and aborting outright if the pre-read fails rather than patching blind. A failed
+   write is loud; a silent truncation is the failure mode that was designed against.
+
+   If it ever needs narrowing, it is still one permission edit and no redeploy —
+   `Notes.Read.All` in `OAUTH_SCOPES` makes the write tools fail at Graph.
 3. **Registry / resource group** — the deploy script takes both as parameters and defaults
    to `AE_*` env vars, so either choice works untouched. **Recommend reusing Throne's ACR
    and resource group**: one fewer thing to hold credentials for, and teardown is a single
