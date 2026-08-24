@@ -476,5 +476,36 @@ check("negative coordinates parse",
 
 
 # ---------------------------------------------------------------------------
+print("\n[13] /healthz liveness route")
+# ---------------------------------------------------------------------------
+# The deploy script curls this to decide whether a rollout succeeded, so it is
+# load-bearing infrastructure, not a nicety. It must exist, must answer 200
+# without auth, and must never carry key material or make a billed call.
+_app = carto.mcp.http_app()
+_paths = [r.path for r in _app.routes if hasattr(r, "path")]
+check("/healthz is registered", "/healthz" in _paths, str(_paths))
+check("/mcp is the transport path", "/mcp" in _paths, str(_paths))
+
+try:
+    from starlette.testclient import TestClient
+    with TestClient(_app) as _c:
+        _r = _c.get("/healthz")
+        check("/healthz answers 200 without auth", _r.status_code == 200,
+              f"got {_r.status_code}")
+        _b = _r.json()
+        check("reports the key is configured", _b.get("api_key_configured") is True)
+        check("reports the armed auth mode", _b.get("auth_mode") == "anonymous",
+              str(_b.get("auth_mode")))
+        # The single most important property of this endpoint: it is public.
+        check("never leaks key material",
+              os.environ["GOOGLE_MAPS_API_KEY"] not in _r.text)
+        # A public endpoint that made a billed Google call would be a way for
+        # anyone who found the URL to burn the daily quota.
+        check("makes no outbound call", "GEOCOD" not in _r.text.upper())
+except ImportError:
+    check("starlette TestClient available", False, "install starlette to test /healthz")
+
+
+# ---------------------------------------------------------------------------
 print(f"\n{'='*58}\n  {_PASS} passed, {_FAIL} failed\n{'='*58}")
 sys.exit(1 if _FAIL else 0)

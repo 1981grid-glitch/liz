@@ -1105,6 +1105,35 @@ async def maps_healthcheck() -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Unauthenticated liveness route.
+#
+# Deliberately makes NO outbound call. An unauthenticated endpoint that triggers
+# a billed Google request would be a way for anyone who finds the URL to burn
+# the daily quota, which is the opposite of what the cost guards are for. So
+# this reports only static, non-sensitive facts: is the process up, was a key
+# injected, which auth mode is armed. It never reveals key material, and it is
+# safe whether or not the transport's auth middleware covers custom routes.
+#
+# The LIVE key check is maps_healthcheck, which is authenticated and costs one
+# cheap Essentials geocode. That split is the point: liveness is free and
+# public, validity is authenticated and metered.
+# ---------------------------------------------------------------------------
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(request):
+    from starlette.responses import JSONResponse
+    return JSONResponse({
+        "ok": True,
+        "service": "cartographer",
+        "api_key_configured": bool(API_KEY),
+        "auth_mode": ("entra-oauth" if OAUTH_ENABLED
+                      else "static-bearer" if BEARER
+                      else "anonymous" if ALLOW_ANON
+                      else "locked"),
+        "checked_at": _now(),
+    })
+
+
 if __name__ == "__main__":
     # Streamable-HTTP for remote connector use. Container listens on 8080.
     if not OAUTH_ENABLED and not BEARER and not ALLOW_ANON:

@@ -17,3 +17,6 @@ probe_*.py
 # Docs and deploy scripts.
 *.md
 *.ps1
+
+# Deploy scripts: run in Cloud Shell, never inside the image.
+scripts/
