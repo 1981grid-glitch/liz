@@ -26,12 +26,13 @@ tree = ast.parse(source)
 
 WANT_FUNCS = {"_now", "_slog", "_scope_root", "_links", "_html_to_text", "_page_html_body",
               "_unauth", "_graph_err", "_send_with_retry", "_g", "_delegated_token",
-              "_whoami", "_health_payload", "_sections_tree",
+              "_whoami", "_health_payload", "_sections_tree", "_check_path_args",
               "onenote_list_notebooks", "onenote_list_sections", "onenote_list_pages",
               "onenote_get_page", "onenote_search", "onenote_create_page",
               "onenote_append_page", "onenote_healthcheck"}
 WANT_CLASSES = {"_TextExtractor", "GraphTokenVerifier"}
-WANT_ASSIGNS = {"_PAGE_TOP_MAX", "_TITLE_MAX", "_MAX_RETRIES", "_BACKOFF_CAP", "GRAPH"}
+WANT_ASSIGNS = {"_PAGE_TOP_MAX", "_TITLE_MAX", "_MAX_RETRIES", "_BACKOFF_CAP", "GRAPH",
+                "_SITE_ID_RE", "_GRAPH_ID_RE"}
 
 func_src, class_src, assign_src = {}, {}, {}
 for node in tree.body:
@@ -115,11 +116,12 @@ def _exec_env():
         "_WLOG": _FakeLogger(),
         "get_access_token": lambda: ENV.get("token_obj"),
     }
-    for name in ("_PAGE_TOP_MAX", "_TITLE_MAX", "_MAX_RETRIES", "_BACKOFF_CAP", "GRAPH"):
+    for name in ("_PAGE_TOP_MAX", "_TITLE_MAX", "_MAX_RETRIES", "_BACKOFF_CAP", "GRAPH",
+                 "_SITE_ID_RE", "_GRAPH_ID_RE"):
         exec(assign_src[name], ns)
     for name in ("_TextExtractor",):
         exec(class_src[name], ns)
-    for name in ("_now", "_slog", "_scope_root", "_links", "_html_to_text",
+    for name in ("_now", "_slog", "_check_path_args", "_scope_root", "_links", "_html_to_text",
                  "_page_html_body", "_unauth", "_graph_err", "_send_with_retry",
                  "_delegated_token", "_whoami"):
         exec(func_src[name], ns)
@@ -618,6 +620,94 @@ check("the shared section walk is a plain function, not a tool",
       "_sections_tree" not in TOOL_NAMES)
 check("search uses the plain helper",
       "_sections_tree(" in func_src["onenote_search"])
+
+# ===========================================================================
+print("\n17. path-segment validation (Graph endpoint confusion)")
+# ===========================================================================
+# Every id below is formatted straight into a Graph request path. A '?' opens the query
+# string, so the suffix the tool appends lands in the query and the request re-points at a
+# different endpoint: scope="root/drive/root/children?" turned onenote_list_notebooks into
+# a SharePoint drive listing. Bounded by the delegated token's own scopes, but it breaks
+# the property that a tool's stated reach equals its actual reach -- which matters because
+# page content is untrusted input fed to a model.
+cpa = G("_check_path_args")
+SAFE_SITE = "netorg39360.sharepoint.com,77fa1078-30b7-4da8-a911-734bb624d6a2,0ea15fff-8d81-45b8-ad92-68e6aacb25d1"
+
+check("scope 'me' accepted", cpa(("me", "scope")) is None)
+check("empty scope accepted (defaults to me)", cpa(("", "scope")) is None)
+check("configured alias accepted", cpa(("throne", "scope")) is None)
+check("alias accepted case-insensitively", cpa(("THRONE", "scope")) is None)
+check("full site id accepted", cpa((SAFE_SITE, "scope")) is None, cpa((SAFE_SITE, "scope")))
+check("real OneNote page id accepted",
+      cpa(("1-a1b2c3d4e5f6!7890", "page_id")) is None)
+
+for bad, label in [
+    ("root/drive/root/children?", "query-injection scope"),
+    ("../users/other@corp.com", "traversal scope"),
+    ("x/../../me/messages?", "traversal+query scope"),
+    ("contoso.sharepoint.com/foo", "path separator in scope"),
+    ("nope", "unrecognised bare word"),
+]:
+    check(f"REJECTS {label}", cpa((bad, "scope")) is not None, repr(bad))
+
+for bad, label in [
+    ("abc?$expand=x", "query injection"),
+    ("abc/../../me/drive", "path traversal"),
+    ("abc#frag", "fragment injection"),
+    ("abc def", "whitespace"),
+]:
+    check(f"REJECTS {label} in an id", cpa((bad, "page_id")) is not None, repr(bad))
+
+check("non-string rejected", cpa((None, "page_id")) is not None)
+check("error names the offending argument", "section_id" in (cpa(("a?b", "section_id")) or ""))
+check("scope error lists the configured aliases", "throne" in (cpa(("nope", "scope")) or ""))
+
+# the guard must actually be reached by the tools, before any Graph call
+reset(g=lambda m, p, t, **k: R(200, {"value": []}))
+out = G("onenote_list_notebooks")(scope="root/drive/root/children?")
+check("list_notebooks refuses a crafted scope", "error" in out[0])
+check("no Graph call made on refusal", STATE["graph_calls"] == 0)
+
+reset(g=lambda m, p, t, **k: R(200, {"value": []}))
+out = G("onenote_list_pages")("sec?$x=1")
+check("list_pages refuses a crafted section_id", "error" in out[0])
+check("no Graph call made on refusal", STATE["graph_calls"] == 0)
+
+reset(g=lambda m, p, t, **k: R(200, {}))
+check("get_page refuses a crafted page_id", "error" in G("onenote_get_page")("p?x"))
+reset(g=lambda m, p, t, **k: R(200, {}))
+check("create_page refuses a crafted section_id",
+      "error" in G("onenote_create_page")("s?x", "T", "<p/>", confirm=True))
+check("crafted create makes no Graph call", STATE["graph_calls"] == 0)
+reset(g=lambda m, p, t, **k: R(200, {}))
+check("append_page refuses a crafted page_id",
+      "error" in G("onenote_append_page")("p?x", "<p/>", confirm=True))
+check("crafted append makes no Graph call", STATE["graph_calls"] == 0)
+reset(g=lambda m, p, t, **k: R(200, {}))
+check("list_sections refuses a crafted notebook_id",
+      "error" in G("onenote_list_sections")("nb?x"))
+reset(g=lambda m, p, t, **k: R(200, {}))
+check("search refuses a crafted section_id",
+      "error" in G("onenote_search")("q", section_id="s?x"))
+
+# ===========================================================================
+print("\n18. OAuth client redirect allowlist is fail-closed")
+# ===========================================================================
+# FastMCP reads allowed_client_redirect_uris=None as "permit every URI". An `or None`
+# would turn the one setting that looks like a lockdown (clearing the variable) into the
+# widest one, and an open redirect on /authorize is how an auth code reaches someone
+# else's host. Allow-any has to be said out loud.
+CFG = CODE[CODE.find("allowed_client_redirect_uris="):][:200]
+check("empty allowlist is NOT coerced to None",
+      "ALLOWED_CLIENT_REDIRECT_URIS or None" not in CODE, CFG)
+check("allow-any requires an explicit opt-in flag",
+      "ALLOW_ANY_CLIENT_REDIRECT" in CODE and "MCP_ALLOW_ANY_CLIENT_REDIRECT" in CODE)
+# CODE comes from ast.unparse, which normalises string quoting -- match either form.
+check("the opt-in is an exact '1' match, not truthiness",
+      re.search(r"os\.environ\.get\(['\"]MCP_ALLOW_ANY_CLIENT_REDIRECT['\"]\)\s*==\s*['\"]1['\"]",
+                CODE) is not None)
+check("claude.ai callback is the shipped default",
+      "https://claude.ai/api/mcp/auth_callback" in CODE)
 
 # ===========================================================================
 print(f"\n{PASS}/{PASS + FAIL} checks passed")

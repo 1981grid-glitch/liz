@@ -96,11 +96,18 @@ OAUTH_SCOPES = [s.strip() for s in os.environ.get("OAUTH_SCOPES", _DEFAULT_SCOPE
                 if s.strip()]
 
 # Which MCP clients may be handed an authorization code. Defaults to the claude.ai
-# connector callback. Empty string = allow any (FastMCP's own default); set that only for
-# local debugging, since it widens who can complete a handshake against this server.
+# connector callback.
+#
+# An EMPTY list means "permit nothing" and is passed through as such. FastMCP treats
+# allowed_client_redirect_uris=None as "permit everything", so an `or None` here would
+# turn the one configuration that looks like a lockdown -- clearing the variable -- into
+# the widest possible setting, and an open redirect on /authorize is how an authorization
+# code gets delivered to somebody else's host. Allow-any therefore needs saying out loud,
+# the same way MCP_ALLOW_ANON gates Throne's unauthenticated mode.
 _DEFAULT_CLIENT_REDIRECTS = "https://claude.ai/api/mcp/auth_callback"
 ALLOWED_CLIENT_REDIRECT_URIS = [u.strip() for u in os.environ.get(
     "ALLOWED_CLIENT_REDIRECT_URIS", _DEFAULT_CLIENT_REDIRECTS).split(",") if u.strip()]
+ALLOW_ANY_CLIENT_REDIRECT = os.environ.get("MCP_ALLOW_ANY_CLIENT_REDIRECT") == "1"
 
 # Site aliases for site-hosted (SharePoint) notebooks, so callers can say scope="throne"
 # instead of pasting a Graph site id. THRONE_SITE_ID is the MasterChiefsThrone site.
@@ -205,7 +212,8 @@ def _build_auth() -> OAuthProxy:
         base_url=PUBLIC_BASE_URL,
         redirect_path="/auth/callback",
         valid_scopes=OAUTH_SCOPES,
-        allowed_client_redirect_uris=ALLOWED_CLIENT_REDIRECT_URIS or None,
+        allowed_client_redirect_uris=(None if ALLOW_ANY_CLIENT_REDIRECT
+                                      else ALLOWED_CLIENT_REDIRECT_URIS),
     )
 
 
@@ -312,6 +320,53 @@ def _graph_err(r: httpx.Response) -> dict:
     return {"error": f"graph {r.status_code}{(' ' + code) if code else ''}: {msg}{hint}"}
 
 
+# --- caller-supplied values that get interpolated into Graph request paths -------------
+# Every id below arrives from the tool caller and is formatted straight into a request
+# path. A value carrying '?', '#' or '/' does NOT stay inside its path segment: '?' opens
+# the query string, so the rest of the URL this file appends ('/onenote/notebooks?$select
+# =...') lands in the query and the request re-points at a different Graph endpoint
+# entirely. scope="root/drive/root/children?" turns onenote_list_notebooks into a
+# SharePoint drive listing.
+#
+# That is not privilege escalation for the signed-in user -- the delegated token still
+# carries only their own access, and only the Notes/Sites.Read scopes. It matters because
+# page content is untrusted input that this server feeds to a model: a prompt injection
+# planted in a shared or site-hosted notebook could otherwise steer a tool that says it
+# lists notebooks into reading unrelated SharePoint content. The tool's stated reach and
+# its actual reach should be the same thing, so validate shape before interpolating.
+_SITE_ID_RE = re.compile(r"^[A-Za-z0-9.\-]+,[0-9a-fA-F-]{36},[0-9a-fA-F-]{36}$")
+# OneNote ids are long opaque strings using unreserved + sub-delim characters; '!' and '$'
+# genuinely appear in page ids. Path separators and query/fragment markers never do.
+_GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9!$'()*+;=._~@:-]{1,512}$")
+
+
+def _check_path_args(*pairs: tuple[object, str]) -> str | None:
+    """Return an error message if any (value, name) pair would escape its path segment.
+
+    Returns None when everything is safe, so call sites read:
+        err = _check_path_args((section_id, "section_id"), (scope, "scope"))
+        if err:
+            return {"error": err}
+    """
+    for value, what in pairs:
+        if not isinstance(value, str):
+            return f"invalid {what}: expected a string"
+        v = value.strip()
+        if what == "scope":
+            # 'me', a configured alias, or a literal Graph site id -- nothing else.
+            if not v or v.lower() == "me" or v.lower() in SITE_ALIASES:
+                continue
+            if not _SITE_ID_RE.match(v):
+                return (f"invalid scope: use 'me', a configured alias "
+                        f"({', '.join(sorted(SITE_ALIASES)) or 'none configured'}), or a "
+                        f"full Graph site id of the form "
+                        f"'contoso.sharepoint.com,<guid>,<guid>'")
+        elif not _GRAPH_ID_RE.match(v):
+            return (f"invalid {what}: expected a Graph id. Get ids from the list tools "
+                    f"rather than composing them; '/', '?' and '#' are never part of one.")
+    return None
+
+
 def _scope_root(scope: str) -> tuple[str, str | None]:
     """Map a caller-facing scope onto a OneNote URL root.
 
@@ -322,6 +377,8 @@ def _scope_root(scope: str) -> tuple[str, str | None]:
     The two are genuinely different URL spaces, not a convenience: a notebook living on
     the MasterChiefsThrone site is NOT addressable under /me/onenote, so a tool that only
     ever built /me paths would silently report 'no such notebook' for every site notebook.
+
+    Assumes _check_path_args has already vetted `scope`; every tool calls it first.
     Returns (url_root, site_id_or_None)."""
     s = (scope or "me").strip()
     if not s or s.lower() == "me":
@@ -427,6 +484,9 @@ def onenote_list_notebooks(scope: str = "me") -> list[dict]:
     token = _delegated_token()
     if not token:
         return [_unauth()]
+    err = _check_path_args((scope, "scope"))
+    if err:
+        return [{"error": err}]
     root, site = _scope_root(scope)
     r = _g("GET", f"{root}/notebooks?$select=id,displayName,isDefault,createdDateTime,links",
            token)
@@ -509,6 +569,9 @@ def onenote_list_sections(notebook_id: str, scope: str = "me") -> dict:
     token = _delegated_token()
     if not token:
         return _unauth()
+    err = _check_path_args((notebook_id, "notebook_id"), (scope, "scope"))
+    if err:
+        return {"error": err}
     return _sections_tree(notebook_id, scope, token)
 
 
@@ -526,6 +589,9 @@ def onenote_list_pages(section_id: str, top: int = 50, scope: str = "me") -> lis
     token = _delegated_token()
     if not token:
         return [_unauth()]
+    err = _check_path_args((section_id, "section_id"), (scope, "scope"))
+    if err:
+        return [{"error": err}]
     root, _ = _scope_root(scope)
     n = max(1, min(int(top), _PAGE_TOP_MAX))
     r = _g("GET", f"{root}/sections/{section_id}/pages"
@@ -562,6 +628,9 @@ def onenote_get_page(page_id: str, format: str = "text", include_ids: bool = Fal
         return _unauth()
     if format not in ("text", "html"):
         return {"error": "format must be 'text' or 'html'"}
+    err = _check_path_args((page_id, "page_id"), (scope, "scope"))
+    if err:
+        return {"error": err}
     root, _ = _scope_root(scope)
 
     meta = _g("GET", f"{root}/pages/{page_id}"
@@ -605,6 +674,10 @@ def onenote_search(query: str, section_id: str | None = None, scope: str = "me",
     q = (query or "").strip().lower()
     if not q:
         return {"error": "query is required"}
+    err = _check_path_args(*(((section_id, "section_id"),) if section_id else ()),
+                           *((scope, "scope"),))
+    if err:
+        return {"error": err}
     root, _ = _scope_root(scope)
 
     if section_id:
@@ -665,6 +738,9 @@ def onenote_create_page(section_id: str, title: str, html: str, confirm: bool = 
         return {"error": "title is required"}
     if len(title) > _TITLE_MAX:
         return {"error": f"title exceeds OneNote's {_TITLE_MAX}-character limit"}
+    err = _check_path_args((section_id, "section_id"), (scope, "scope"))
+    if err:
+        return {"error": err}
     root, _ = _scope_root(scope)
 
     doc = _page_html_body(title, html)
@@ -718,6 +794,9 @@ def onenote_append_page(page_id: str, html: str, target: str = "body",
         return {"error": "action must be append|prepend|insert|replace"}
     if not (html or "").strip():
         return {"error": "html is required — refusing to PATCH a page with empty content"}
+    err = _check_path_args((page_id, "page_id"), (scope, "scope"))
+    if err:
+        return {"error": err}
     root, _ = _scope_root(scope)
 
     # 1) capture the before-state; a failed read ABORTS rather than patching blind.

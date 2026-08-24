@@ -205,7 +205,7 @@ notebook name — since anything on it is readable by whoever can reach the ingr
 ## 6. Tests
 
 ```bash
-python test_onenote_mcp.py      # 129/129
+python test_onenote_mcp.py      # 166/166
 ```
 
 Same discipline as the Throne suites: every function and class under test is extracted from
@@ -325,6 +325,58 @@ Answers change the config, not the code, except where noted.
    requirement, the fallback is enumerate → fetch page content → scan, which is
    O(pages) Graph calls and will throttle on a large notebook. Worth building only against
    a real requirement, and worth scoping to one section when it is.
+
+---
+
+## 8a. Security review (2026-08-23)
+
+Ran before deployment rather than after, since this server sits on public HTTPS ingress,
+holds a client secret, brokers OAuth, and hands delegated Microsoft tokens to tools. Two
+findings, both fixed on this branch.
+
+### Graph endpoint confusion via unvalidated ids  — fixed
+
+`scope`, `notebook_id`, `section_id` and `page_id` were formatted straight into Graph
+request paths. A `?` in one of those values does not stay inside its path segment: it
+opens the query string, so the suffix the tool appends lands in the query and the request
+re-points at a different endpoint. `scope="root/drive/root/children?"` turned
+`onenote_list_notebooks` into a SharePoint drive listing.
+
+This was never privilege escalation for the signed-in user — the delegated token carries
+only their own access, under only `Notes.*` and `Sites.Read.All`. It mattered for a
+different reason: **page content is untrusted input that this server feeds to a model.** A
+prompt injection planted in a shared or site-hosted notebook could steer a tool that says
+it lists notebooks into reading unrelated SharePoint content. A tool's stated reach and
+its actual reach should be the same thing.
+
+Fixed with `_check_path_args()`: `scope` must be `me`, a configured alias, or a literal
+Graph site id; ids must match the OneNote id shape. `/`, `?` and `#` are rejected. Every
+tool calls it before building a URL, so a crafted value costs zero Graph calls.
+
+### Empty redirect allowlist inverted to allow-any  — fixed
+
+`allowed_client_redirect_uris=ALLOWED_CLIENT_REDIRECT_URIS or None` — FastMCP reads `[]`
+as "permit nothing" and `None` as "permit everything", so clearing the env var, the one
+action that looks like a lockdown, produced the widest possible setting. An open redirect
+on `/authorize` is how an authorization code gets delivered to somebody else's host, and
+PKCE does not help when the attacker originates the flow.
+
+Now an empty list stays empty, and allow-any needs `MCP_ALLOW_ANY_CLIENT_REDIRECT=1` said
+out loud — the same fail-closed shape as Throne's `MCP_ALLOW_ANON`.
+
+### Checked and cleared
+
+- `Authorization` on redirect-following requests — httpx strips it cross-origin, so the
+  claim in `_g()`'s comment holds.
+- Unauthenticated `/health` — exposes public OAuth metadata and alias *names*, never site
+  ids, tokens, users, or notebook names.
+- `_slog` — ids and counts only.
+- `GraphTokenVerifier`'s 300s cache — a stale entry passes the MCP gate, but every tool
+  then calls Graph with that same token, so a revoked or expired token yields no data.
+- Startup fails closed: `_build_auth()` raises on missing credentials before the server
+  can bind.
+
+Suite is now **166 checks** (sections 17 and 18 cover the two fixes).
 
 ---
 
