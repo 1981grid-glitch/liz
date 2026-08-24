@@ -9,6 +9,20 @@ produced them is an ephemeral cloud container with no reach into the Skynet work
 the Microsoft 365 tenant. Every step below has to be run by a human on a machine that is
 signed in.
 
+The two file-based surfaces are scripted, so "run by a human" is one command:
+
+```powershell
+git pull
+.\agent-posture\Install-Posture.ps1 -WhatIf     # dry run, touches nothing
+.\agent-posture\Install-Posture.ps1             # install
+.\agent-posture\Install-Posture.ps1 -Repo C:\path\to\repo   # also drop .github/ copy
+```
+
+It places the Claude Code and GitHub Copilot renderings, backs up any file it would
+replace (timestamped, so repeat runs do not clobber earlier backups), skips files that are
+already identical, and then prints the steps no script can do. It is pure ASCII for the
+reason `push-through-2026-08-22.ps1` is — the cp1252 em-dash trap in PowerShell 5.1.
+
 ---
 
 ## The surfaces
@@ -26,8 +40,8 @@ signed in.
 
 ## 1. Claude Code
 
-Copy `claude/CLAUDE.md` to `~/.claude/CLAUDE.md` on each machine you code from. It applies
-to every project. A project's own `CLAUDE.md` layers on top and wins on specifics — that
+`Install-Posture.ps1` does this, or copy `claude/CLAUDE.md` to `~/.claude/CLAUDE.md` by
+hand on each machine you code from. It applies to every project. A project's own `CLAUDE.md` layers on top and wins on specifics — that
 is why this repo's root `CLAUDE.md` carries Throne architecture and deploy invariants
 while the global one carries only temperament.
 
