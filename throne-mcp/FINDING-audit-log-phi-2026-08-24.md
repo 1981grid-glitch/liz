@@ -46,28 +46,37 @@ grounding configuration that includes the case record and excludes a file at its
 The agent scope was narrowed anyway, on separate merits (see `build-agent.py`), but it
 should not be mistaken for a control over this.
 
-## Status — unverified as of today
+## Status — CONFIRMED live in production, verified 2026-08-24
 
-The 324/1,031 measurement is from **2026-08-10** and is the last figure in the source.
-Environment variables can be changed without a deploy, so the roster may have been armed
-since. **I could not verify today's state**: this session has no Azure CLI and no
-credentials, and reading the log through the connector to check would pull the exact
-consumer data at issue into a cloud session transcript — creating a second copy of the
-problem in order to measure the first.
+Verified from Skynet, signed in, via `az containerapp show -g rg-throne-mcp -n throne-mcp`:
 
-Settle it from a signed-in shell instead:
-
-```bash
-az containerapp show -g rg-throne-mcp -n throne-mcp \
-  --query "properties.template.containers[0].env[?name=='PHI_SCRUB_NAMES'].value" -o tsv
+```
+PHI_SCRUB_NAMES         : ABSENT
+CONSUMER_NAME_BLOCKLIST : ABSENT
+AUDIT_SCRUB_STDOUT      : ABSENT
+image                   : thronemcpe9ebfc.azurecr.io/throne-mcp:3.2
+revision                : throne-mcp--0000020
 ```
 
-Empty or absent means the scrub is off and every line written since 2026-08-10 is
-unscrubbed too.
+All three are **absent**, not merely empty — the distinction matters because an empty
+`--query ...value` alone can't rule out a value delivered via `secretRef`, which is why the
+check was widened to list every env var name first. `_scrub_phi()` has been a no-op since
+before the 2026-08-10 measurement and still is today. Every line appended to
+`Claude-Writes-Log.md` since then, including whatever was written this week, carries
+consumer names in plain text at the root of a library any staff member with access can
+open.
 
-A second check, from a machine already authorized to read the library: open
-`Claude-Writes-Log.md` and look at recent lines. `[consumer entry#N/abcd1234]` means armed;
-a plain name means not.
+Also confirmed, incidentally, from the same query: the deployed image is still `3.2`
+(`throne-mcp--0000020`). The 2026-08-22 fixes have not shipped — independent confirmation
+of what `DEPLOY-NOTES-2026-08-22.md` already said, not a new problem.
+
+What remains open is not whether the scrub is off — that's settled — but **where the
+current roster lives.** `PHI_SCRUB_NAMES` wants every consumer who has ever appeared in a
+path or subject (~84 names as of 2026-08-10). This session cannot locate that roster: it
+has no Azure CLI, and the Throne MCP connector it was using to read the site disconnected
+mid-session and needs reauthorization before it can be queried again. Whoever arms this
+should pull the roster from wherever it is canonically maintained, not retype it from
+memory.
 
 ## Fix, when someone picks this up
 
