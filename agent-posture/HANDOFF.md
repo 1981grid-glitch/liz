@@ -147,6 +147,56 @@ failure the posture exists to prevent.
 
 ---
 
+## Can any of this be automated?
+
+Asked and checked against the published API reference, because both halves look
+automatable and only one of them nearly is.
+
+### Custom instructions — no
+
+There is no documented Microsoft Graph write path for the personalization custom
+instructions. Every reference describes it as a user-managed setting under
+**Settings > Personalization**, and the compliance documentation states the content
+"can manually be exported by the user" and is not reachable by eDiscovery or Content
+Search. Paste it yourself.
+
+What *is* programmable is the admin gate above it, not the content:
+[`enhancedPersonalizationSetting`](https://learn.microsoft.com/graph/api/resources/enhancedpersonalizationsetting)
+lets a tenant admin turn the whole personalization capability on or off via Graph. So an
+admin can script away your ability to have custom instructions at all, but nobody can
+script the instructions themselves into place.
+
+### Declarative agent — an API exists, and this tenant's connector cannot call it
+
+Publishing an app package to the tenant catalog is a real Graph call:
+
+```http
+POST /appCatalogs/teamsApps
+Content-Type: application/zip
+```
+
+**Application permissions are Not supported on this endpoint.** It is delegated-only:
+`AppCatalog.Submit` (submit for admin review only), or `AppCatalog.ReadWrite.All` /
+`Directory.ReadWrite.All` to publish outright. Personal Microsoft accounts are not
+supported either.
+
+The Throne MCP connector authenticates app-only — `CertificateCredential`, client
+credentials, `.default` scope. So a `copilot_publish_agent` tool added to it would
+authenticate fine, look completely correct in the app registration, and fail at runtime on
+every call.
+
+**That is the OneNote trap again**, exactly: an endpoint whose shape is right, whose
+permission appears grantable, and which is simply not available to an app-only identity.
+Do not add such a tool to the connector on the assumption that a permission grant will fix
+it. Making it work would require a delegated token from a signed-in account with
+`AppCatalog.ReadWrite.All` — which, for a package you publish once and update rarely, buys
+nothing over uploading the zip by hand.
+
+### So
+
+Copilot Studio's agent builder, by hand, once. Everything upstream of that click —
+authoring, rendering, validating, version-controlling — is automated here already.
+
 ## Schema limits
 
 Enforced by `build-agent.py`; exceeding one is rejected at upload, not at runtime.

@@ -11,6 +11,22 @@ Placement:
   added to requests."** Instructions are not shown in the chat view; when Copilot uses the
   file it lists it in the response's References.
 
+Also available, if a repo needs different rules per language or folder — put
+`*.instructions.md` files in `.github/instructions/` with YAML front matter naming the
+paths they govern:
+
+```markdown
+---
+applyTo: "**/*.py"
+---
+```
+
+A path-scoped file with no `applyTo` is skipped entirely. Azure DevOps reads the same
+layout from `.azuredevops/`, and adds organization- and project-level instruction scopes in
+its settings; where several scopes apply, all of them are used. Note that Copilot code
+review reads instruction files from the pull request's **target** branch — changing an
+instructions file inside a PR does not affect that PR's own review.
+
 ## How to answer
 
 - Lead with the answer or the finding. No preamble, no flattery, no restating the question.
