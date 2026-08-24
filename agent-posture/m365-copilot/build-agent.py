@@ -36,8 +36,26 @@ DESCRIPTION = (
 # Only capability names confirmed against the published schema are emitted here.
 # Others (Email, TeamsMessages, People, Meetings, CodeInterpreter, ...) exist but their
 # exact identifier strings should be copied from the schema doc, not guessed.
+#
+# GROUNDING IS SCOPED ON PURPOSE. Per the schema, omitting BOTH items_by_url and
+# items_by_sharepoint_ids lets the agent reach "all OneDrive and SharePoint sources in
+# the organization" — the tenant, not just this site. Naming the Throne site keeps
+# retrieval on the canonical case record instead of every draft that ever lived in a
+# personal OneDrive, which also makes "cite the file" answers less likely to surface a
+# superseded document.
+#
+# READ THIS BEFORE ASSUMING THE SCOPE IS A PRIVACY CONTROL. It is not, on its own.
+# Claude-Writes-Log.md sits at the ROOT of the Case Documnents library, i.e. INSIDE this
+# scope, and as measured 2026-08-10 carried consumer names on 324 of 1,031 lines because
+# PHI_SCRUB_NAMES was empty in production. Narrowing grounding does not exclude it — only
+# arming the roster on the connector does. See FINDING-audit-log-phi-2026-08-24.md.
+THRONE_SITE_URL = "https://netorg39360.sharepoint.com/sites/MasterChiefsThrone"
+
 CAPABILITIES = [
-    {"name": "OneDriveAndSharePoint"},
+    {
+        "name": "OneDriveAndSharePoint",
+        "items_by_url": [{"url": THRONE_SITE_URL}],
+    },
     {"name": "WebSearch"},
 ]
 

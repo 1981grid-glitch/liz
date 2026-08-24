@@ -136,6 +136,19 @@ upload via **Microsoft 365 admin center → Settings → Integrated apps → Upl
 The icons are not in this repo — Path B needs them created before the package will
 validate.
 
+### Grounding scope, and what it does not protect
+
+The agent is scoped to the Throne site rather than the tenant. Omitting both `items_by_url`
+and `items_by_sharepoint_ids` would let it reach every OneDrive and SharePoint source in
+the organization; naming the site keeps retrieval on the canonical case record instead of
+every draft that ever lived in a personal OneDrive.
+
+**Do not read that as a privacy control.** `Claude-Writes-Log.md` sits at the root of the
+Case Documnents library — inside this scope — and as measured 2026-08-10 carried consumer
+names on 324 of 1,031 lines, because `PHI_SCRUB_NAMES` was empty in production. No
+grounding configuration includes the case record and excludes a file at its root. See
+`throne-mcp/FINDING-audit-log-phi-2026-08-24.md`; the fix is on the connector, not here.
+
 ### Licensing
 
 An agent using only the `WebSearch` capability is available broadly. Any other capability —
