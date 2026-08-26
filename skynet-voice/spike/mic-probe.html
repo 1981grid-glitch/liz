@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Task 0.1 — Glasses Mic Probe</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0f1115; --fg:#e6e9ef; --dim:#9aa4b2; --line:#262b36;
+          --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
+         font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  h1 { font-size:17px; margin:0 0 2px; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:14px; }
+  button { width:100%; padding:16px; font-size:16px; font-weight:600; border:0; border-radius:10px;
+           background:var(--acc); color:#04121f; margin-bottom:10px; }
+  button:disabled { opacity:.45; }
+  button.sec { background:#21262d; color:var(--fg); }
+  .card { border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:10px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim);
+             margin:0 0 8px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td { padding:3px 0; vertical-align:top; }
+  td:first-child { color:var(--dim); padding-right:10px; white-space:nowrap; width:1%; }
+  td:last-child { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-word; }
+  .verdict { font-weight:700; padding:10px 12px; border-radius:8px; margin-bottom:10px; font-size:14px; }
+  .v-ok { background:rgba(63,185,80,.14); color:var(--ok); border:1px solid rgba(63,185,80,.35); }
+  .v-warn { background:rgba(210,153,34,.14); color:var(--warn); border:1px solid rgba(210,153,34,.35); }
+  .v-bad { background:rgba(248,81,73,.14); color:var(--bad); border:1px solid rgba(248,81,73,.35); }
+  #meter { height:8px; background:#21262d; border-radius:4px; overflow:hidden; margin:8px 0 4px; }
+  #meterFill { height:100%; width:0%; background:var(--ok); transition:width .05s; }
+  canvas { width:100%; height:110px; display:block; background:#0b0d12; border-radius:6px; }
+  .axis { display:flex; justify-content:space-between; color:var(--dim); font-size:10px;
+          font-family:ui-monospace,monospace; margin-top:3px; }
+  textarea { width:100%; height:230px; background:#0b0d12; color:var(--fg); border:1px solid var(--line);
+             border-radius:8px; padding:10px; font:11px/1.45 ui-monospace,monospace; }
+  .hint { color:var(--dim); font-size:12px; margin-top:6px; }
+  .band { display:flex; align-items:center; gap:8px; margin:3px 0; font-size:12px;
+          font-family:ui-monospace,monospace; }
+  .band .lbl { width:82px; color:var(--dim); }
+  .band .bar { flex:1; height:9px; background:#21262d; border-radius:3px; overflow:hidden; }
+  .band .barf { height:100%; background:var(--acc); }
+  .band .pct { width:52px; text-align:right; }
+</style>
+</head>
+<body>
+
+<h1>Task 0.1 — Glasses Mic Probe</h1>
+<div class="sub">Measures what the browser actually captures. Verifies C2 (source) and C3 (bandwidth).</div>
+
+<div id="ctxWarn"></div>
+
+<button id="btnStart">Start probe</button>
+<button id="btnPlay" class="sec" disabled>Play back recording</button>
+
+<div class="card">
+  <h2>Live input</h2>
+  <div id="meter"><div id="meterFill"></div></div>
+  <canvas id="spec" width="600" height="110"></canvas>
+  <div class="axis" id="axis"><span>0</span><span></span><span></span></div>
+  <div class="hint" id="status">Idle.</div>
+</div>
+
+<div id="verdicts"></div>
+
+<div class="card">
+  <h2>Recorded values</h2>
+  <table id="vals"><tr><td>—</td><td>run the probe</td></tr></table>
+</div>
+
+<div class="card">
+  <h2>Spectral energy distribution</h2>
+  <div id="bands"><div class="hint">No capture yet.</div></div>
+  <div class="hint">Bluetooth HFP narrowband (CVSD, 8&nbsp;kHz) carries essentially nothing above ~4&nbsp;kHz.
+    Wideband HFP (mSBC, 16&nbsp;kHz) reaches ~7–8&nbsp;kHz. Content above 8&nbsp;kHz means the capture is
+    <em>not</em> coming over an HFP link — i.e. the phone's own mic.</div>
+</div>
+
+<div class="card">
+  <h2>Findings block — paste into FINDINGS-TASK-0.md</h2>
+  <textarea id="out" readonly>Run the probe to generate.</textarea>
+  <button class="sec" id="btnCopy" style="margin-top:8px">Copy</button>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var CAPTURE_MS = 6000;
+  var els = {
+    start: document.getElementById('btnStart'),
+    play: document.getElementById('btnPlay'),
+    copy: document.getElementById('btnCopy'),
+    status: document.getElementById('status'),
+    vals: document.getElementById('vals'),
+    verdicts: document.getElementById('verdicts'),
+    bands: document.getElementById('bands'),
+    out: document.getElementById('out'),
+    meterFill: document.getElementById('meterFill'),
+    spec: document.getElementById('spec'),
+    axis: document.getElementById('axis'),
+    ctxWarn: document.getElementById('ctxWarn')
+  };
+  var ctx2d = els.spec.getContext('2d');
+  var recordedBlob = null, recordedUrl = null;
+
+  if (!window.isSecureContext) {
+    els.ctxWarn.innerHTML =
+      '<div class="verdict v-bad">NOT a secure context. getUserMedia() will be refused. ' +
+      'This page must be served over HTTPS (Tailscale Serve) — see check 0.2. C1 confirmed blocking.</div>';
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
+    });
+  }
+  function row(k, v) { return '<tr><td>' + esc(k) + '</td><td>' + esc(v) + '</td></tr>'; }
+  function fmtHz(h) { return h >= 1000 ? (h / 1000).toFixed(2) + ' kHz' : Math.round(h) + ' Hz'; }
+
+  els.copy.onclick = function () {
+    els.out.select();
+    try { document.execCommand('copy'); els.copy.textContent = 'Copied'; } catch (e) {}
+    setTimeout(function () { els.copy.textContent = 'Copy'; }, 1200);
+  };
+  els.play.onclick = function () {
+    if (recordedUrl) { new Audio(recordedUrl).play(); }
+  };
+
+  els.start.onclick = async function () {
+    els.start.disabled = true;
+    els.verdicts.innerHTML = '';
+    els.status.textContent = 'Requesting microphone…';
+
+    var stream;
+    try {
+      // Deliberately NO sampleRate constraint, and all processing OFF.
+      // Forcing a rate makes the browser resample and report the rate you asked
+      // for, which hides the true channel bandwidth. AGC/NS/AEC also band-limit,
+      // which would corrupt the C3 measurement.
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1
+        }
+      });
+    } catch (err) {
+      els.verdicts.innerHTML =
+        '<div class="verdict v-bad">FAIL — getUserMedia rejected: ' + esc(err.name + ': ' + err.message) + '</div>';
+      els.status.textContent = 'Failed.';
+      els.start.disabled = false;
+      return;
+    }
+
+    var track = stream.getAudioTracks()[0];
+    var settings = {}, caps = {};
+    try { settings = track.getSettings ? track.getSettings() : {}; } catch (e) {}
+    try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) {}
+
+    // Enumerate devices AFTER permission — labels are blank before it is granted.
+    var devices = [];
+    try {
+      var all = await navigator.mediaDevices.enumerateDevices();
+      devices = all.filter(function (d) { return d.kind === 'audioinput'; });
+    } catch (e) {}
+
+    // Unforced AudioContext -> reports the true output/graph rate.
+    var ac = new (window.AudioContext || window.webkitAudioContext)();
+    var src = ac.createMediaStreamSource(stream);
+    var analyser = ac.createAnalyser();
+    analyser.fftSize = 4096;
+    analyser.smoothingTimeConstant = 0;
+    src.connect(analyser);
+
+    var bins = analyser.frequencyBinCount;
+    var minDb = analyser.minDecibels, maxDb = analyser.maxDecibels;
+    var dbRange = maxDb - minDb;              // default 70 dB (-100 .. -30)
+    var nyquist = ac.sampleRate / 2;
+    var hzPerBin = nyquist / bins;
+    var freqData = new Uint8Array(bins);
+    var timeData = new Uint8Array(analyser.fftSize);
+    var maxHold = new Float32Array(bins);       // peak-hold spectrum, 0..255
+    var frames = 0, peakLevel = 0;
+    var toDb = function (byte) { return minDb + (byte / 255) * dbRange; };
+
+    els.axis.innerHTML = '<span>0</span><span>' + fmtHz(nyquist / 2) + '</span><span>' + fmtHz(nyquist) + '</span>';
+
+    // Record audio so the operator can listen back and confirm the source by ear.
+    var recorder = null;
+    try {
+      recorder = new MediaRecorder(stream);
+      var chunks = [];
+      recorder.ondataavailable = function (e) { if (e.data.size) chunks.push(e.data); };
+      recorder.onstop = function () {
+        recordedBlob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+        recordedUrl = URL.createObjectURL(recordedBlob);
+        els.play.disabled = false;
+      };
+      recorder.start();
+    } catch (e) { /* playback is a convenience, not required */ }
+
+    var t0 = performance.now();
+    els.status.textContent = 'Speak normally, in a steady voice, until the timer ends…';
+
+    function draw() {
+      var elapsed = performance.now() - t0;
+      analyser.getByteFrequencyData(freqData);
+      analyser.getByteTimeDomainData(timeData);
+
+      // RMS level from the time domain, for the meter and a signal-presence check.
+      var sum = 0;
+      for (var i = 0; i < timeData.length; i++) {
+        var v = (timeData[i] - 128) / 128;
+        sum += v * v;
+      }
+      var rms = Math.sqrt(sum / timeData.length);
+      if (rms > peakLevel) peakLevel = rms;
+      els.meterFill.style.width = Math.min(100, rms * 320).toFixed(1) + '%';
+
+      // Only accumulate spectrum while there is actual speech energy, so silence
+      // between words does not drag the average toward the noise floor.
+      if (rms > 0.012) {
+        frames++;
+        for (var b = 0; b < bins; b++) {
+          if (freqData[b] > maxHold[b]) maxHold[b] = freqData[b];
+        }
+      }
+
+      // Spectrum display, peak-hold.
+      var W = els.spec.width, H = els.spec.height;
+      ctx2d.clearRect(0, 0, W, H);
+      ctx2d.fillStyle = '#0b0d12';
+      ctx2d.fillRect(0, 0, W, H);
+      // 4 kHz and 8 kHz reference lines
+      [4000, 8000].forEach(function (f) {
+        if (f < nyquist) {
+          var x = (f / nyquist) * W;
+          ctx2d.strokeStyle = '#39414f';
+          ctx2d.setLineDash([3, 3]);
+          ctx2d.beginPath(); ctx2d.moveTo(x, 0); ctx2d.lineTo(x, H); ctx2d.stroke();
+          ctx2d.setLineDash([]);
+          ctx2d.fillStyle = '#6b7280';
+          ctx2d.font = '9px monospace';
+          ctx2d.fillText((f / 1000) + 'k', x + 2, 9);
+        }
+      });
+      ctx2d.fillStyle = '#58a6ff';
+      for (var p = 0; p < bins; p++) {
+        var x2 = (p / bins) * W;
+        var h = (maxHold[p] / 255) * H;
+        ctx2d.fillRect(x2, H - h, Math.max(1, W / bins), h);
+      }
+
+      if (elapsed < CAPTURE_MS) {
+        els.status.textContent = 'Keep speaking… ' + ((CAPTURE_MS - elapsed) / 1000).toFixed(1) + 's';
+        requestAnimationFrame(draw);
+      } else {
+        finish();
+      }
+    }
+
+    function finish() {
+      if (recorder && recorder.state === 'recording') { try { recorder.stop(); } catch (e) {} }
+      els.status.textContent = 'Capture complete.';
+
+      // ---- Bandwidth analysis --------------------------------------------------
+      // Ask the physical question directly: is there speech content in each
+      // diagnostic band, measurably above the noise floor? Validated against
+      // synthetic CVSD / mSBC / wideband spectra (see spike/bandwidth-classifier.test.js).
+      function meanDbIn(lo, hi) {
+        var sum = 0, n = 0;
+        var b0 = Math.max(0, Math.floor(lo / hzPerBin));
+        var b1 = Math.min(bins - 1, Math.ceil(Math.min(hi, nyquist) / hzPerBin));
+        for (var b = b0; b <= b1; b++) { sum += toDb(maxHold[b]); n++; }
+        return n ? sum / n : minDb;
+      }
+      // Noise floor: median of the top 10% of bins — above any real mic content.
+      var tail = [];
+      for (var tb = Math.floor(bins * 0.9); tb < bins; tb++) tail.push(toDb(maxHold[tb]));
+      tail.sort(function (a, b) { return a - b; });
+      var floorDb = tail[Math.floor(tail.length / 2)];
+
+      var refDb  = meanDbIn(1000, 3000);    // present whenever anyone spoke
+      var midDb  = meanDbIn(4500, 6500);    // present for mSBC, absent for CVSD
+      var highDb = meanDbIn(9000, 12000);   // present only off a non-HFP mic
+      var dynamicRange = refDb - floorDb;
+      var midOverFloor = midDb - floorDb;
+      var highOverFloor = highDb - floorDb;
+
+      var PRESENT = 6;    // dB above floor to call a band occupied
+      var MIN_DR  = 35;   // dB of usable range before any verdict means anything
+
+      var midPresent = midOverFloor > PRESENT;
+      var highPresent = highOverFloor > PRESENT;
+      var bandwidthClass;
+      if (dynamicRange < MIN_DR) {
+        bandwidthClass = 'INCONCLUSIVE (dynamic range ' + dynamicRange.toFixed(0) + ' dB)';
+      } else if (!midPresent && !highPresent) {
+        bandwidthClass = 'NARROWBAND ~8 kHz (CVSD)';
+      } else if (midPresent && !highPresent) {
+        bandwidthClass = 'WIDEBAND ~16 kHz (mSBC)';
+      } else {
+        bandwidthClass = 'FULL BANDWIDTH (not an HFP link)';
+      }
+
+      var bandDefs = [
+        ['1–3 kHz (ref)', refDb, refDb - floorDb],
+        ['4.5–6.5 kHz', midDb, midOverFloor],
+        ['9–12 kHz', highDb, highOverFloor],
+        ['noise floor', floorDb, 0]
+      ];
+      var bandsHtml = '';
+      bandDefs.forEach(function (d) {
+        var over = d[2];
+        var w = Math.max(0, Math.min(100, (over / 60) * 100));
+        bandsHtml += '<div class="band"><span class="lbl">' + d[0] + '</span>' +
+          '<span class="bar"><span class="barf" style="width:' + w.toFixed(1) + '%"></span></span>' +
+          '<span class="pct">' + (d[0] === 'noise floor' ? d[1].toFixed(0) + ' dB' : '+' + over.toFixed(0) + ' dB') + '</span></div>';
+      });
+      els.bands.innerHTML = bandsHtml;
+
+      // ---- Verdicts -------------------------------------------------------------
+      var vhtml = '';
+      var signalOk = peakLevel > 0.02 && frames > 20;
+
+      if (!signalOk) {
+        vhtml += '<div class="verdict v-bad">NO USABLE SIGNAL — peak level ' + peakLevel.toFixed(4) +
+                 ' over ' + frames + ' voiced frames. The probe captured near-silence; ' +
+                 'result is inconclusive. Re-run and speak continuously.</div>';
+      }
+
+      // C2: which device is actually live?
+      var label = track.label || '(no label)';
+      var looksBluetooth = /headset|hands.?free|bluetooth|sco|ray.?ban|meta/i.test(label);
+      var looksBuiltin = /built.?in|internal|handset|phone|default|microphone/i.test(label) && !looksBluetooth;
+      if (looksBluetooth) {
+        vhtml += '<div class="verdict v-ok">C2 — track label names a Bluetooth/headset device. ' +
+                 'Confirm by ear with playback, and by covering the phone mic.</div>';
+      } else if (looksBuiltin) {
+        vhtml += '<div class="verdict v-warn">C2 — track label looks like the phone\'s own mic, not the glasses. ' +
+                 'Chrome may have silently fallen back. Verify by ear before recording a PASS.</div>';
+      } else {
+        vhtml += '<div class="verdict v-warn">C2 — device label is ambiguous ("' + esc(label) +
+                 '"). Confirm the source by ear and by covering the phone mic.</div>';
+      }
+
+      // C3: bandwidth.
+      if (signalOk) {
+        if (dynamicRange < MIN_DR) {
+          vhtml += '<div class="verdict v-warn">C3 — INCONCLUSIVE. Only ' + dynamicRange.toFixed(0) +
+                   ' dB between speech level and noise floor (need ~' + MIN_DR + ' dB). ' +
+                   'Too little range to tell a codec cutoff from the noise floor. ' +
+                   'Re-run closer to the mic, louder, and somewhere quieter.</div>';
+        } else if (bandwidthClass.indexOf('NARROWBAND') === 0) {
+          vhtml += '<div class="verdict v-bad">C3 — NARROWBAND. No content above the noise floor in ' +
+                   '4.5–6.5 kHz (+' + midOverFloor.toFixed(0) + ' dB). Consistent with HFP CVSD at 8 kHz. ' +
+                   'This is the worst case for ASR: expect a material word-error-rate penalty ' +
+                   'against the Yealink. Quantify it in Phase 4 before committing to the glasses.</div>';
+        } else if (bandwidthClass.indexOf('WIDEBAND') === 0) {
+          vhtml += '<div class="verdict v-ok">C3 — WIDEBAND HFP. Content present at 4.5–6.5 kHz ' +
+                   '(+' + midOverFloor.toFixed(0) + ' dB) but not at 9–12 kHz (+' + highOverFloor.toFixed(0) + ' dB). ' +
+                   'Consistent with mSBC at 16 kHz — the good HFP case, and a match for ' +
+                   'Parakeet\'s expected 16 kHz input.</div>';
+        } else {
+          vhtml += '<div class="verdict v-warn">C3 — FULL BANDWIDTH. Content at 9–12 kHz ' +
+                   '(+' + highOverFloor.toFixed(0) + ' dB) means this is NOT an HFP link — almost ' +
+                   'certainly the phone\'s own microphone. Re-check C2 before reading this as good news.</div>';
+        }
+      }
+      els.verdicts.innerHTML = vhtml;
+
+      // ---- Recorded values table ------------------------------------------------
+      var html = '';
+      html += row('track.label', label);
+      html += row('AudioContext.sampleRate', ac.sampleRate + ' Hz (unforced)');
+      html += row('settings.sampleRate', settings.sampleRate != null ? settings.sampleRate + ' Hz' : '(not reported)');
+      html += row('settings.channelCount', settings.channelCount != null ? settings.channelCount : '(not reported)');
+      html += row('settings.deviceId', (settings.deviceId || '(none)').slice(0, 24) + '…');
+      html += row('settings.echoCancellation', String(settings.echoCancellation));
+      html += row('settings.noiseSuppression', String(settings.noiseSuppression));
+      html += row('settings.autoGainControl', String(settings.autoGainControl));
+      html += row('caps.sampleRate', caps.sampleRate ? JSON.stringify(caps.sampleRate) : '(not reported)');
+      html += row('noise floor', floorDb.toFixed(1) + ' dB');
+      html += row('1–3 kHz over floor', '+' + dynamicRange.toFixed(1) + ' dB');
+      html += row('4.5–6.5 kHz over floor', '+' + midOverFloor.toFixed(1) + ' dB');
+      html += row('9–12 kHz over floor', '+' + highOverFloor.toFixed(1) + ' dB');
+      html += row('classification', bandwidthClass);
+      html += row('peak RMS', peakLevel.toFixed(4));
+      html += row('voiced frames', frames);
+      html += row('audioinput devices', devices.length);
+      devices.forEach(function (d, i) { html += row('  device[' + i + ']', d.label || '(unlabeled)'); });
+      html += row('secure context', String(window.isSecureContext));
+      html += row('user agent', navigator.userAgent);
+      els.vals.innerHTML = html;
+
+      // ---- Findings block -------------------------------------------------------
+      var cls = signalOk ? bandwidthClass : 'INCONCLUSIVE (no signal)';
+      var lines = [
+        '### 0.1 — Glasses microphone reaches the browser',
+        '',
+        'Result: ____  (operator sets PASS/FAIL after confirming source by ear)',
+        'Date: ' + new Date().toISOString(),
+        '',
+        'Source confirmation (C2):',
+        '  track.label ............. ' + label,
+        '  audioinput devices ...... ' + devices.length,
+      ];
+      devices.forEach(function (d, i) { lines.push('    [' + i + '] ' + (d.label || '(unlabeled)')); });
+      lines.push('  confirmed by ear ........ ____ (yes/no)');
+      lines.push('  confirmed w/ phone mic covered ... ____ (yes/no)');
+      lines.push('');
+      lines.push('Capture format (C3):');
+      lines.push('  AudioContext.sampleRate . ' + ac.sampleRate + ' Hz  [unforced]');
+      lines.push('  settings.sampleRate ..... ' + (settings.sampleRate != null ? settings.sampleRate + ' Hz' : '(not reported)'));
+      lines.push('  settings.channelCount ... ' + (settings.channelCount != null ? settings.channelCount : '(not reported)'));
+      lines.push('  capabilities.sampleRate . ' + (caps.sampleRate ? JSON.stringify(caps.sampleRate) : '(not reported)'));
+      lines.push('');
+      lines.push('Measured bandwidth (the number that actually matters):');
+      lines.push('  noise floor ............. ' + floorDb.toFixed(1) + ' dB');
+      lines.push('  1-3 kHz over floor ...... +' + dynamicRange.toFixed(1) + ' dB   (usable dynamic range)');
+      lines.push('  4.5-6.5 kHz over floor .. +' + midOverFloor.toFixed(1) + ' dB   (present for mSBC, absent for CVSD)');
+      lines.push('  9-12 kHz over floor ..... +' + highOverFloor.toFixed(1) + ' dB   (present only off a non-HFP mic)');
+      lines.push('  classification .......... ' + cls);
+      lines.push('');
+      lines.push('  peak RMS ................ ' + peakLevel.toFixed(4) + '  (voiced frames: ' + frames + ')');
+      lines.push('  secure context .......... ' + window.isSecureContext);
+      lines.push('  user agent .............. ' + navigator.userAgent);
+      lines.push('');
+      lines.push('Note: processing disabled for measurement (AEC/NS/AGC all false).');
+      lines.push('Production capture will re-enable them; they narrow the band further.');
+      els.out.value = lines.join('\n');
+
+      // Release the mic; keep the AudioContext for nothing further.
+      stream.getTracks().forEach(function (t) { t.stop(); });
+      ac.close();
+      els.start.disabled = false;
+      els.start.textContent = 'Run probe again';
+    }
+
+    requestAnimationFrame(draw);
+  };
+})();
+</script>
+</body>
+</html>
