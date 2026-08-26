@@ -21,8 +21,8 @@ class TTSBackend(ABC):
 class KokoroTTS(TTSBackend):
     """Kokoro-FastAPI (github.com/remsky/Kokoro-FastAPI), OpenAI-compatible
     /v1/audio/speech. Not yet installed on SKYNET as of Task 0.3 — see
-    relay/README.md. Native output is 24kHz mono; confirm this once a real
-    instance is running, since it can't be verified from here."""
+    relay/README.md. 24kHz mono output and the af_bella voice name are
+    confirmed against the project's own docs, not assumed."""
 
     sample_rate = 24000
 
