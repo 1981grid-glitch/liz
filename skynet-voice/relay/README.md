@@ -112,6 +112,21 @@ duplicate the GPU-resident model in a second process.
 
 ## Known gaps for Phase 4
 
+- **Kokoro is running on CPU, not the 5070 Ti, until upstream ships CUDA 13
+  support.** Confirmed 2026-08-26: `start-gpu.ps1` runs clean and the server
+  comes up, but its own startup log is self-contradictory — banner text says
+  `"...on cuda"` / `"warmed up on cuda"`, but the actual status line says
+  `CUDA: False` and `"Loading Kokoro model on cpu"`. Root cause is
+  [remsky/Kokoro-FastAPI#443](https://github.com/remsky/Kokoro-FastAPI/issues/443):
+  the project pins CUDA 12.8; the RTX 5070 Ti needs CUDA 13, so torch silently
+  falls back to CPU rather than erroring. A community fix exists but is
+  Docker-based (a different base image) and unmerged as of this writing —
+  doesn't apply to the native `uv` install path used here, and Docker isn't
+  set up on SKYNET regardless. Kokoro-82M is small enough that CPU inference
+  is likely still usable, just slower than the architecture doc's 150–400 ms
+  TTS-stage budget assumed — expect that number to be optimistic until this
+  lands upstream. Re-check periodically; not worth chasing a Docker install
+  just for this.
 - **No server-side VAD / continuous mode.** The client is hold-to-talk (matching
   the lesson in SKYNET's own dictation build notes — toggle mode was the
   documented source of real bugs there). Continuous mode is a v2 feature, not
