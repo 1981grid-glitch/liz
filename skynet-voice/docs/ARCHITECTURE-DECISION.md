@@ -61,9 +61,9 @@ runs in. One process. No new heavy dependencies — `anthropic`, `httpx`, `fasta
 |---|---|---|
 | Browser client | One static page: mic capture, WS, PCM playback queue | C1, C4 |
 | Transport | Single WebSocket, binary audio frames, JSON control | — |
-| STT | HTTP to local Parakeet, per 0.3 | 0.3, privacy |
+| STT | **Wyoming-protocol client** to the existing Parakeet bridge at `SKYNET:10300` (not a new HTTP service — see 0.3) | 0.3, privacy, avoids duplicate GPU load |
 | Model | `anthropic` SDK, `messages.stream()`, `claude-sonnet-4-6` | C5 |
-| TTS | HTTP to local Kokoro, streamed if 0.3 says it can | latency |
+| TTS | HTTP to local Kokoro — **not yet installed, per 0.3**; Azure Neural TTS (`~/.throne/`) is a proven but cloud fallback | latency, C1 objective |
 | Session state | Per-connection, token-budgeted | C5, Phase 4 |
 | Bind | Tailscale IP explicitly, never `0.0.0.0` | Phase 2.5 |
 | TLS | `tailscale serve` in front | C1 |
@@ -93,6 +93,23 @@ upstream is an unauthenticated endpoint that spends an API key, on every interfa
 Bind to the Tailscale IP, scope the firewall rule to the Tailscale interface, and
 require a shared secret even on the tailnet.
 
+### Traps inherited from SKYNET's existing speech stack
+
+0.3 turned up detailed build notes from an unrelated project (a Home Assistant voice
+bridge) that hit these exact problems on this exact machine. They apply directly:
+
+- **`pythonw.exe` loses inbound reachability.** SKYNET's firewall permits inbound to
+  `python.exe`, not `pythonw.exe` — launch the relay as `python.exe` (console or not),
+  or add an explicit **port**-scoped inbound rule. Never a program-scoped rule; a venv
+  rebuild silently breaks those.
+- **`onnxruntime-gpu` ≥1.27 needs `ort.preload_dlls()` before session creation**, or it
+  falls back to CPU with no error — only relevant if the relay ever loads a model
+  in-process rather than going through the Wyoming bridge, but worth knowing given how
+  silent the failure is.
+- **A green Task Scheduler result proves nothing.** `LastTaskResult=0` reports success
+  whether the service lived or died. Deliverable #3 (startup procedure) needs an actual
+  liveness check, whatever the launch mechanism turns out to be.
+
 ### Latency budget
 
 The target is <2 s from speech-end to audio-start. The realistic allocation:
@@ -100,9 +117,9 @@ The target is <2 s from speech-end to audio-start. The realistic allocation:
 | Stage | Budget | Note |
 |---|---|---|
 | VAD endpointing | 200–300 ms | Silence hangover; the tunable with the largest perceived effect |
-| STT (Parakeet) | 150–400 ms | Local; utterance-length dependent |
+| STT (Parakeet) | 150–400 ms | Local, over Wyoming; **measured RTF 0.098** on this hardware confirms the budget holds |
 | Model first token | 400–800 ms | Dominated by system-prompt length — keep it short (C5) |
-| TTS first audio | 150–400 ms | **Only if Kokoro streams.** Batch-only pushes this to full-utterance synthesis |
+| TTS first audio | 150–400 ms | **Only if Kokoro streams — unconfirmed, Kokoro isn't installed yet.** Batch-only pushes this to full-utterance synthesis |
 | Network + playback | 50–100 ms | Tailnet, same premises |
 
 Two properties decide whether this lands: **whether Kokoro streams** (0.3) and **the
@@ -128,8 +145,15 @@ the Messages API, not OpenAI-shaped chat completions.
 - **C4 is untested until it is tested on the device.** Screen-off behaviour may require
   a wake lock or PWA install, and may simply not survive. Test it early — it is the
   core use case, and finding out late invalidates the walking-around premise.
+- **TTS is a real gap, not a formality.** Kokoro isn't installed anywhere on SKYNET
+  (confirmed, per 0.3) — this is new build work, not wiring to something already
+  running. The Azure Neural TTS chain proven elsewhere on this machine is a legitimate
+  fallback, but using it means accepting that response audio leaves the tailnet.
 - **This pipeline remains not cleared for PHI**, per the brief's §7. Nothing here
-  changes that, and the relay should carry no path to case data.
+  changes that, and the relay should carry no path to case data. Notably, SKYNET's
+  local dictation tool exists specifically *because* cloud STT is prohibited under a
+  BAA — the same reasoning applies here, and is exactly why Kokoro (local) is the
+  default over Azure TTS (cloud) despite Azure being the path of least resistance.
 
 ## Effort
 
