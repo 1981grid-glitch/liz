@@ -35,31 +35,25 @@ python -m venv venv
 venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env
-# edit .env — at minimum: ANTHROPIC_API_KEY, RELAY_HOST (your Tailscale IP,
-# from `tailscale ip -4`), RELAY_SHARED_SECRET
+# edit .env — at minimum: ANTHROPIC_API_KEY, RELAY_SHARED_SECRET (make one up).
+# Leave RELAY_HOST at its default (127.0.0.1) -- see "Bind to loopback" in
+# docs/ARCHITECTURE-DECISION.md for why binding to the Tailscale IP directly
+# would be wrong here.
 ```
 
-Run the tests first — they need no live services:
+For running tests specifically (not the real server), the shared secret needs to
+match what the test files hardcode:
 
 ```powershell
+$env:RELAY_SHARED_SECRET = "test-secret"
 python tests\test_websocket.py
 python tests\test_barge_in.py
 ```
 
-### Firewall — port-scoped, not program-scoped
-
-Per Task 0.3's findings: SKYNET has an existing rule permitting inbound to
-`python.exe`, but none for `pythonw.exe`, and a program-scoped rule silently breaks
-on a venv rebuild. Add a **port**-scoped rule instead, matching the pattern already
-used for `Enable-ParakeetFirewall.ps1`:
-
-```powershell
-New-NetFirewallRule -DisplayName "SKYNET Voice Relay" -Direction Inbound `
-    -Protocol TCP -LocalPort 8765 -Profile Private -Action Allow
-```
-
-Scope this to the **Tailscale interface only** — do not open it on the Public
-profile.
+No firewall rule needed for the relay's own port: bound to loopback, it's
+unreachable from any network interface regardless of firewall state, and
+`tailscale serve` (below) runs through the already-allowed `tailscaled` process
+rather than opening a new listening socket.
 
 ### Run
 
@@ -67,12 +61,15 @@ profile.
 venv\Scripts\python.exe -m src.server.main
 ```
 
-Front it with `tailscale serve` for TLS (see `../spike/probe-tailscale.ps1` and the
-Task 0 findings for the cert-issuance prerequisite):
+Front it with `tailscale serve` — this both provides the TLS C1 requires and is the
+actual tailnet-exposure mechanism (the app itself is bound to loopback, see above):
 
 ```powershell
-tailscale serve --https=443 --set-path=/ http://127.0.0.1:8765
+tailscale serve --https=443 --bg http://127.0.0.1:8765
 ```
+
+`--bg` makes this persist past closing the window. `tailscale serve status` shows
+the current mapping; `tailscale serve off` removes it.
 
 Bookmark `https://<magicdns-name>/?token=<RELAY_SHARED_SECRET>` on the phone — the
 client reads the token from the URL once and persists it to `localStorage`.
@@ -80,24 +77,31 @@ client reads the token from the URL once and persists it to `localStorage`.
 ### TTS — Kokoro is not installed yet (Task 0.3)
 
 Default backend is `kokoro`, pointed at `http://127.0.0.1:8880` (Kokoro-FastAPI's
-standard port). Nothing is listening there yet. Options, from
-[`Kokoro-FastAPI`](https://github.com/remsky/Kokoro-FastAPI):
+standard port). Nothing is listening there yet. Docker isn't set up on SKYNET (per
+0.3's findings), so use the native path — `uv` is already installed:
 
 ```powershell
-docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-gpu:latest
+git clone https://github.com/remsky/Kokoro-FastAPI.git
+cd Kokoro-FastAPI
+python docker/scripts/download_model.py --output api/src/models/v1_0
+.\start-gpu.ps1
 ```
 
-or a bare install per that repo's README if Docker isn't set up on SKYNET (it wasn't,
-per 0.3's findings — `docker` wasn't on PATH).
+Requires `espeak-ng` installed system-wide first (fallback phonemizer for unknown
+words) — grab the Windows installer from the
+[espeak-ng releases page](https://github.com/espeak-ng/espeak-ng/releases). Leave
+`start-gpu.ps1` running in its own window; it's the server.
+
+Confirm it's actually producing audible speech — not just responding to HTTP —
+before wiring it to the relay: `tests\smoke_test_kokoro.ps1`.
 
 To use the proven Azure fallback instead while Kokoro gets set up, set
 `TTS_BACKEND=azure` and `AZURE_TTS_KEY` in `.env` (see
 `../docs/ARCHITECTURE-DECISION.md` for the tradeoff — this means response audio
 leaves the tailnet).
 
-**The Kokoro-FastAPI output sample rate (assumed 24kHz in `src/server/tts.py`) is
-unconfirmed** — verify it against a real instance and correct `KokoroTTS.sample_rate`
-if it differs; a mismatch here means pitched-wrong audio, not a crash.
+24kHz output and the `af_bella` voice name are confirmed against Kokoro-FastAPI's
+own docs, not assumed.
 
 ### STT — Parakeet, via Wyoming, not a new install
 

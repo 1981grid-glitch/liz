@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     relay_model: str = "claude-sonnet-4-6"
 
-    relay_host: str
+    relay_host: str = "127.0.0.1"
     relay_port: int = 8765
     relay_shared_secret: str
 

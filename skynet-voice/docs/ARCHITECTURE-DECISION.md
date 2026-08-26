@@ -65,7 +65,7 @@ runs in. One process. No new heavy dependencies — `anthropic`, `httpx`, `fasta
 | Model | `anthropic` SDK, `messages.stream()`, `claude-sonnet-4-6` | C5 |
 | TTS | HTTP to local Kokoro — **not yet installed, per 0.3**; Azure Neural TTS (`~/.throne/`) is a proven but cloud fallback | latency, C1 objective |
 | Session state | Per-connection, token-budgeted | C5, Phase 4 |
-| Bind | Tailscale IP explicitly, never `0.0.0.0` | Phase 2.5 |
+| Bind | Loopback (`127.0.0.1`) only — `tailscale serve` does the tailnet exposure | Phase 2.5, C1 |
 | TLS | `tailscale serve` in front | C1 |
 
 ### Three things to get structurally right from the start
@@ -88,10 +88,22 @@ connection, trim by token budget, and — since cellular↔wifi handoff will dro
 socket — key sessions by a client-held session ID so a reconnect resumes rather than
 starts over.
 
-**3. Bind to the tailnet address explicitly.** `0.0.0.0` plus the default-off auth in
-upstream is an unauthenticated endpoint that spends an API key, on every interface.
-Bind to the Tailscale IP, scope the firewall rule to the Tailscale interface, and
-require a shared secret even on the tailnet.
+**3. Bind to loopback, not the tailnet address.** `0.0.0.0` plus the default-off auth
+in upstream is an unauthenticated endpoint that spends an API key, on every interface —
+that part of the original reasoning was right. But the fix isn't binding to the
+Tailscale IP directly; it's binding to `127.0.0.1` and letting `tailscale serve` do
+the actual tailnet exposure. `tailscale serve` terminates TLS and proxies to the app
+over loopback — that's the whole mechanism, and it's also what C1 needs, since the app
+itself speaks plain `ws://`/`http://`, not `wss://`/`https://`. Bound to the tailnet IP
+directly, the raw unencrypted endpoint would be reachable by anything on the tailnet at
+`http://<tailnet-ip>:8765`, bypassing `tailscale serve` and its TLS entirely if anyone
+— including the client, by mistake — hit that address instead of the HTTPS one. Bound
+to loopback, the app is unreachable from any network interface, tailnet included; the
+only way in is through `tailscale serve`'s proxy. That also means no inbound firewall
+rule is needed for the app's own port — loopback traffic doesn't reach the Windows
+Firewall's inbound-rules path, and `tailscale serve` runs through the already-allowed
+`tailscaled` process, not a new listening socket. Still require the shared secret on
+top of this — defense in depth against anything else on the tailnet.
 
 ### Traps inherited from SKYNET's existing speech stack
 
