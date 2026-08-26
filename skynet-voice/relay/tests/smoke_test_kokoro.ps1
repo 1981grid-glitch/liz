@@ -20,7 +20,8 @@
 param(
   [string]$KokoroUrl = "http://127.0.0.1:8880",
   [string]$Voice = "af_bella",
-  [string]$Text = "This is a test of the local text to speech service."
+  [string]$Text = "This is a test of the local text to speech service.",
+  [switch]$SkipPlayback
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,25 +70,37 @@ if (-not $bytes -or $bytes.Length -lt 1000) {
 }
 Say ("PASS - received {0:N0} bytes of audio in {1:N2}s" -f $bytes.Length, $sw.Elapsed.TotalSeconds)
 
-Head "Playback — the only real success test"
 $outPath = Join-Path $env:TEMP "kokoro-smoke-test.wav"
 [System.IO.File]::WriteAllBytes($outPath, $bytes)
-Say "Saved to $outPath"
-Say "Playing now — turn your volume up."
 
-$player = New-Object System.Media.SoundPlayer $outPath
-$player.PlaySync()
-
-Write-Host ""
-$heard = Read-Host "Did you actually hear the sentence spoken? (y/n)"
-if ($heard -eq 'y' -or $heard -eq 'Y') {
+if ($SkipPlayback) {
+  Head "Playback skipped (-SkipPlayback)"
+  Say "Saved to $outPath — copy it somewhere with speakers if you want to check by ear."
   Say ""
-  Say "PASS - Kokoro is real and working. Safe to point the relay at it."
+  Say "PASS (unconfirmed by ear) - Kokoro returned real audio bytes over HTTP."
+  Say "SKYNET itself never plays audio in the real system anyway -- the phone"
+  Say "does, through the glasses -- so this is the right level of confirmation"
+  Say "for now. The real audible test happens during the phone conversation test."
   Say "  Set TTS_BACKEND=kokoro and KOKORO_URL=$KokoroUrl in relay/.env"
 } else {
-  Say ""
-  Say "FAIL - a file was produced but you did not hear it. Do not treat this"
-  Say "as working. Check: correct Windows playback device selected, volume,"
-  Say "and that $outPath actually contains speech and not silence."
-  exit 1
+  Head "Playback — the strongest local success test"
+  Say "Saved to $outPath"
+  Say "Playing now — turn your volume up."
+
+  $player = New-Object System.Media.SoundPlayer $outPath
+  $player.PlaySync()
+
+  Write-Host ""
+  $heard = Read-Host "Did you actually hear the sentence spoken? (y/n)"
+  if ($heard -eq 'y' -or $heard -eq 'Y') {
+    Say ""
+    Say "PASS - Kokoro is real and working. Safe to point the relay at it."
+    Say "  Set TTS_BACKEND=kokoro and KOKORO_URL=$KokoroUrl in relay/.env"
+  } else {
+    Say ""
+    Say "FAIL - a file was produced but you did not hear it. Do not treat this"
+    Say "as working. Check: correct Windows playback device selected, volume,"
+    Say "and that $outPath actually contains speech and not silence."
+    exit 1
+  }
 }
