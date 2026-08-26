@@ -2,7 +2,7 @@
 
 **Build:** SKYNET Conversational Voice Relay over Tailscale
 **Date:** 2026-08-22 (opened) — updated 2026-08-26
-**Status:** ⚠️ **0.4 fails. 0.2 fails, actionably, retry in progress. 0.3 answered — but from SKYNET's own operational documentation, not the probe script. 0.1 still blocked on hardware.**
+**Status:** ⚠️ **0.4 fails. 0.2 passes. 0.3 answered — but from SKYNET's own operational documentation, not the probe script. 0.1 is the last one standing, unblocked now that HTTPS is live.**
 
 ---
 
@@ -11,7 +11,7 @@
 | Check | Subject | Result |
 |---|---|---|
 | 0.1 | Glasses mic reaches the browser | ⏸️ **NOT RUN** — requires the phone and glasses in hand |
-| 0.2 | Tailscale HTTPS cert issuance | ❌ **FAIL** — actionable; HTTPS Certificates was off tailnet-side, retry pending |
+| 0.2 | Tailscale HTTPS cert issuance | ✅ **PASS** — cert issued after enabling HTTPS Certificates tailnet-side |
 | 0.3 | Local Parakeet / Kokoro reachability | ⚠️ **PARTIAL** — Parakeet confirmed real via internal docs; Kokoro confirmed absent |
 | 0.4 | Upstream repo reality check | ❌ **FAIL** — verified against source, conclusive |
 
@@ -184,7 +184,7 @@ Result: ____
 
 ---
 
-## 0.2 — Tailscale HTTPS certificate issuance ❌ FAIL (actionable)
+## 0.2 — Tailscale HTTPS certificate issuance ✅ PASS
 
 Run via [`spike/probe-tailscale.ps1`](spike/probe-tailscale.ps1) on SKYNET.
 
@@ -227,6 +227,18 @@ catches up — this is a documented Tailscale behavior
 ([tailscale/tailscale#20823](https://github.com/tailscale/tailscale/issues/20823)),
 not a sign of misconfiguration. Retry every few minutes rather than troubleshooting
 firewall/network settings on SKYNET's end.
+
+**Resolved 2026-08-26.** After enabling HTTPS Certificates in the admin console,
+`tailscale cert skynet.tail552b9c.ts.net` returned:
+
+```
+Public cert unchanged at skynet.tail552b9c.ts.net.crt
+Private key unchanged at skynet.tail552b9c.ts.net.key
+```
+
+"Unchanged" is Tailscale's success case — the cert is valid and current, nothing
+needed re-issuing. `tailscale serve` doesn't need these exported files referenced
+manually; it manages certs internally once HTTPS Certificates is on. C1 is cleared.
 
 ---
 
