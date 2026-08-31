@@ -303,6 +303,59 @@ Then, in order:
 
 ---
 
+## 7a. Deploying from a Claude Code cloud session (added 2026-08-31)
+
+The whole build stalled on one gap: a cloud session has no `az` and no Azure
+identity, so every deploy bounced back to a laptop. Two pieces close it. The first
+is done; the second needs a human once.
+
+**Done — `.claude/hooks/session-start.sh`.** A SessionStart hook that installs the
+Azure CLI and onenote-mcp's runtime deps into every web session. Note the install
+route: Microsoft's official installer lives behind `aka.ms`, which this
+environment's egress proxy **blocks** (`curl` returns `000`, not a redirect), so
+azure-cli comes from PyPI instead. Don't "fix" that back to the aka.ms script.
+Cold run ~1m40s, warm ~1s. It handles no secrets and performs no login.
+
+**Needed once — a scoped service principal.** The CLI without credentials reaches
+no subscription. In Azure Cloud Shell (`shell.azure.com`, works in a phone
+browser):
+
+```bash
+az ad sp create-for-rbac \
+  --name "claude-code-onenote-deploy" \
+  --role Contributor \
+  --scopes /subscriptions/<sub-id>/resourceGroups/<rg-holding-throne-and-onenote-mcp>
+```
+
+Scope it to the one resource group — that is the blast radius. It prints `appId`,
+`password`, `tenant`. Put them in the Claude Code **environment config** (not this
+repo, not a chat message) as:
+
+| Variable | Value |
+|---|---|
+| `AZURE_CLIENT_ID` | `appId` |
+| `AZURE_CLIENT_SECRET` | `password` (mark as a secret) |
+| `AZURE_TENANT_ID` | `tenant` |
+
+Environment configuration is documented at
+<https://code.claude.com/docs/en/claude-code-on-the-web>.
+
+After that the hook reports `this session can deploy` at startup, and a session
+logs in with:
+
+```bash
+az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
+```
+
+**The trade, stated plainly.** This is a standing credential in configuration —
+the same class of tech debt as the brief's §7 fallback, and a real change from
+holding nothing persistent. Scoping to one resource group bounds it; set a
+rotation date. What it buys is that steps 2–4 of the activation runbook stop
+needing a laptop. **Step 5 never moves** — completing the Microsoft sign-in is
+the delegated handshake, and that is the security property, not an obstacle.
+
+---
+
 ## 8. Open questions (brief §9)
 
 Answers change the config, not the code, except where noted.
