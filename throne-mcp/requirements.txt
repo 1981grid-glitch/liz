@@ -1,0 +1,8 @@
+fastmcp==2.14.7
+azure-identity>=1.17
+azure-keyvault-secrets>=4.8
+httpx>=0.27
+authlib>=1.3
+pyjwt>=2.8
+py-key-value-aio[disk]==0.3.0
+cryptography==49.0.0
