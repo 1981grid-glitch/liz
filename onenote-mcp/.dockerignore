@@ -1,0 +1,29 @@
+# The Dockerfile COPYs exactly two files: requirements.txt and
+# onenote_mcp_server.py. Everything below is context weight only.
+# Do NOT add either of those two files here.
+#
+# Same shape as throne-mcp/.dockerignore, and for the same reason: `az acr build`
+# uploads this directory as build context, so anything not excluded is shipped to
+# the registry to be thrown away.
+
+__pycache__/
+*.pyc
+*.pyo
+
+# The SessionStart hook builds a venv for importing the real module. It is large,
+# it is machine-specific, and it must never reach a build context. Listed here as
+# well as in .gitignore because the two mechanisms are independent -- .gitignore
+# keeps it out of git, this keeps it out of the image build.
+.venv/
+
+# Local patch backups - prior copies of the server source; shipping one into the
+# build context risks confusion about what is live.
+*.bak-*
+
+# Tests and tooling: run on the workstation or in a session, never inside the image.
+test_*.py
+probe_*.py
+
+# Docs and deploy scripts.
+*.md
+*.ps1

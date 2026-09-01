@@ -262,6 +262,25 @@ the whole point of §0.
 
 ### Deploy runbook
 
+**Browser-only (recommended, and the only path that works from a phone):
+`CLOUD-SHELL-DEPLOY.md` in this folder.** It follows `throne-mcp/CLOUD-SHELL-DEPLOY.md`
+step for step, with the two steps Throne's does not need — the Entra registration
+and the connector — since this is a first deploy rather than a roll.
+
+The three values that were previously unknown are now resolved, read off Throne's
+own runbook rather than guessed:
+
+| | |
+|---|---|
+| Resource group | `rg-throne-mcp` |
+| Registry | `thronemcpe9ebfc` |
+| Container Apps environment | not hardcoded anywhere — take it from the app that already runs in it: `az containerapp show -g rg-throne-mcp -n throne-mcp --query "properties.managedEnvironmentId" -o tsv` |
+
+That last one is deliberate. `CLAUDE.md` is explicit that no file in this repo is
+authoritative about live infrastructure; ask Azure.
+
+### Deploy from a workstation
+
 ```powershell
 $env:AE_RESOURCE_GROUP    = "<rg>"
 $env:AE_REGISTRY          = "<acr>"
