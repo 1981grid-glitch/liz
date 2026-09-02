@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.bak-*
+
+# built by .claude/hooks/session-start.sh
+.venv/
