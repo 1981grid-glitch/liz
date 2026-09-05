@@ -1,0 +1,14 @@
+# The official Anthropic SDK is the only supported way to call the Messages API
+# from Python; do not swap it for raw httpx.
+#
+# PIN 1.4.0, AND DO NOT LOWER IT. `fallbacks` (server-side refusal fallback) does
+# not exist anywhere in the 0.x line -- it is not merely undocumented there, the
+# kwarg is absent, so `beta.messages.create(fallbacks=...)` raises TypeError at
+# request time and every /v1/look returns a 500. This shipped once: the suite
+# stubs the client with **kwargs, so it happily asserted the kwarg was passed and
+# stayed green while the real SDK rejected it. Running the server for real is what
+# caught it. test_vision_bridge.py now checks the installed signature when the SDK
+# is importable -- see "live SDK signature guard" there.
+anthropic==1.4.0
+fastapi==0.121.0
+uvicorn[standard]==0.42.0

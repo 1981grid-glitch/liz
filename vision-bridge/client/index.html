@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0b0d10">
+<title>Vision Bridge</title>
+<link rel="manifest" href='data:application/json,{"name":"Vision Bridge","short_name":"Vision","display":"standalone","background_color":"%230b0d10","theme_color":"%230b0d10","start_url":"."}'>
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#151a21; --line:#232b36; --ink:#e8edf4; --dim:#93a1b5;
+    --accent:#4b9fff; --ok:#3ddc97; --warn:#ffb454; --err:#ff6b6b;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    display:flex;flex-direction:column;overflow:hidden;
+    padding-bottom:env(safe-area-inset-bottom);
+  }
+  #stage{position:relative;flex:1;min-height:0;background:#000}
+  video{width:100%;height:100%;object-fit:cover;display:block}
+  canvas{display:none}
+
+  #status{
+    position:absolute;top:0;left:0;right:0;padding:10px 14px;
+    padding-top:calc(10px + env(safe-area-inset-top));
+    background:linear-gradient(#000c,#0000);font-size:14px;font-weight:600;
+    display:flex;align-items:center;gap:8px;
+  }
+  #dot{width:9px;height:9px;border-radius:50%;background:var(--dim);flex:none}
+  .listening #dot{background:var(--accent);animation:pulse 1s infinite}
+  .thinking #dot{background:var(--warn);animation:pulse .6s infinite}
+  .speaking #dot{background:var(--ok)}
+  .error   #dot{background:var(--err)}
+  @keyframes pulse{50%{opacity:.25}}
+
+  /* The answer sits over the frame so it can be read at a glance while walking. */
+  #answer{
+    position:absolute;left:0;right:0;bottom:0;padding:16px 18px 20px;
+    background:linear-gradient(#0000,#000d 22%);font-size:19px;line-height:1.45;
+    max-height:52%;overflow-y:auto;
+  }
+  #heard{color:var(--dim);font-size:14px;margin-bottom:6px;min-height:1.2em}
+  #cost{color:var(--dim);font-size:12px;margin-top:10px}
+
+  #bar{display:flex;gap:10px;padding:12px;background:var(--panel);border-top:1px solid var(--line);flex:none}
+  button{
+    font:inherit;font-weight:600;color:var(--ink);background:#1e2530;
+    border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer;
+  }
+  button:active{transform:scale(.98)}
+  button:disabled{opacity:.4}
+  /* Deliberately large: this gets pressed while walking, one-handed, without looking. */
+  #ask{flex:1;font-size:19px;padding:20px;background:var(--accent);border-color:var(--accent);color:#04121f}
+  #ask.active{background:var(--err);border-color:var(--err);color:#fff}
+  #gear{width:56px;flex:none}
+
+  dialog{
+    border:1px solid var(--line);border-radius:16px;background:var(--panel);color:var(--ink);
+    width:min(440px,92vw);padding:20px;
+  }
+  dialog::backdrop{background:#000b}
+  label{display:block;margin:14px 0 6px;font-size:13px;color:var(--dim);font-weight:600}
+  input{
+    width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);
+    background:#0e131a;color:var(--ink);font:inherit;
+  }
+  .row{display:flex;gap:10px;margin-top:18px}
+  .row button{flex:1}
+  .hint{font-size:12px;color:var(--dim);margin-top:14px;line-height:1.5}
+  h2{margin:0;font-size:18px}
+</style>
+</head>
+<body class="idle">
+
+<div id="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="frame"></canvas>
+  <div id="status"><span id="dot"></span><span id="state">Starting camera…</span></div>
+  <div id="answer">
+    <div id="heard"></div>
+    <div id="text">Tap <b>Ask</b>, say what you want to know, and it will answer out loud.</div>
+    <div id="cost"></div>
+  </div>
+</div>
+
+<div id="bar">
+  <button id="ask">Ask</button>
+  <button id="gear" title="Settings">⚙</button>
+</div>
+
+<dialog id="settings">
+  <h2>Bridge settings</h2>
+  <label for="url">Bridge URL</label>
+  <input id="url" placeholder="https://vision-bridge.…azurecontainerapps.io" autocomplete="off">
+  <label for="tok">Bearer token</label>
+  <input id="tok" type="password" placeholder="the VISION_BEARER value" autocomplete="off">
+  <label for="px">Capture size (longest edge, px)</label>
+  <input id="px" type="number" min="480" max="1568" step="64">
+  <div class="hint">
+    Claude downsamples above ~1568px, so larger costs more and shows no more detail.
+    1280 reads most labels and signs. Drop to 768 for lower cost and latency.
+  </div>
+  <div class="row">
+    <button id="close">Close</button>
+    <button id="save">Save</button>
+  </div>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+const cam = $('cam'), frame = $('frame');
+const cfg = {
+  url: localStorage.getItem('vb.url') || location.origin,
+  tok: localStorage.getItem('vb.tok') || '',
+  px:  +(localStorage.getItem('vb.px') || 1280),
+};
+// One id per app launch groups follow-ups into a conversation on the bridge.
+let session = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now());
+let recog = null, busy = false, listening = false;
+
+function setState(cls, msg){
+  document.body.className = cls;
+  $('state').textContent = msg;
+}
+function say(text){
+  // Cancel first: an unfinished previous answer otherwise queues behind this one.
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 1.05;
+  u.onend = () => { if(!busy && !listening) setState('idle','Ready'); };
+  setState('speaking','Speaking');
+  speechSynthesis.speak(u);
+}
+
+// --- camera ---------------------------------------------------------------
+async function startCamera(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} },
+      audio:false
+    });
+    cam.srcObject = stream;
+    await cam.play();
+    setState('idle','Ready');
+  }catch(e){
+    setState('error','Camera blocked — allow camera access, and use HTTPS');
+  }
+}
+
+// Scale so the longest edge is cfg.px. Image tokens scale with area, so halving
+// the edge quarters the cost of every request.
+function grabFrame(){
+  const w = cam.videoWidth, h = cam.videoHeight;
+  if(!w || !h) return null;
+  const scale = Math.min(1, cfg.px / Math.max(w,h));
+  frame.width = Math.round(w*scale);
+  frame.height = Math.round(h*scale);
+  frame.getContext('2d').drawImage(cam, 0, 0, frame.width, frame.height);
+  return frame.toDataURL('image/jpeg', 0.82).split(',')[1];
+}
+
+// --- speech in ------------------------------------------------------------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function startListening(){
+  if(!SR){ setState('error','This browser has no speech recognition — use Chrome'); return; }
+  if(!cfg.tok){ openSettings(); return; }
+
+  // Capture the frame the moment they start asking. By the time they finish the
+  // sentence they may have moved; what they were looking at when they asked is
+  // what they meant.
+  const shot = grabFrame();
+  if(!shot){ setState('error','Camera not ready yet'); return; }
+
+  recog = new SR();
+  recog.lang = 'en-US';
+  recog.interimResults = true;
+  recog.continuous = false;
+  let finalText = '';
+
+  recog.onstart = () => { listening = true; $('ask').classList.add('active');
+                          $('ask').textContent = 'Listening…'; setState('listening','Listening'); };
+  recog.onresult = e => {
+    let interim = '';
+    for(const r of e.results){ (r.isFinal ? finalText += r[0].transcript : interim = r[0].transcript); }
+    $('heard').textContent = (finalText || interim).trim();
+  };
+  recog.onerror = e => {
+    listening = false; resetButton();
+    setState('error', e.error === 'not-allowed'
+      ? 'Microphone blocked — allow mic access' : 'Didn’t catch that');
+  };
+  recog.onend = () => {
+    listening = false; resetButton();
+    const q = finalText.trim();
+    if(q) send(shot, q); else setState('idle','Ready');
+  };
+  recog.start();
+}
+
+function resetButton(){ $('ask').classList.remove('active'); $('ask').textContent = 'Ask'; }
+
+// --- bridge ---------------------------------------------------------------
+async function send(image_b64, query){
+  busy = true;
+  setState('thinking','Thinking');
+  $('text').textContent = '…';
+  $('cost').textContent = '';
+  try{
+    const r = await fetch(cfg.url.replace(/\/$/,'') + '/v1/look', {
+      method:'POST',
+      headers:{'content-type':'application/json','authorization':'Bearer ' + cfg.tok},
+      body: JSON.stringify({ image_b64, media_type:'image/jpeg', query, session_id: session })
+    });
+    const data = await r.json().catch(() => ({ok:false, error:'bridge sent a non-JSON reply'}));
+    if(!r.ok || !data.ok){
+      const msg = data.error || ('bridge error ' + r.status);
+      $('text').textContent = msg;
+      setState('error', r.status === 401 ? 'Unauthorized — check the token' : 'Error');
+      return;
+    }
+    $('text').textContent = data.text;
+    const u = data.usage || {};
+    $('cost').textContent =
+      `${data.latency_ms} ms · ${u.input_tokens||0} in / ${u.output_tokens||0} out · ~$${(u.est_cost_usd||0).toFixed(4)}`;
+    say(data.text);
+  }catch(e){
+    $('text').textContent = 'Could not reach the bridge. Check the URL and your connection.';
+    setState('error','Offline');
+  }finally{
+    busy = false;
+  }
+}
+
+// --- settings -------------------------------------------------------------
+function openSettings(){
+  $('url').value = cfg.url; $('tok').value = cfg.tok; $('px').value = cfg.px;
+  $('settings').showModal();
+}
+$('gear').onclick = openSettings;
+$('close').onclick = () => $('settings').close();
+$('save').onclick = () => {
+  cfg.url = $('url').value.trim();
+  cfg.tok = $('tok').value.trim();
+  cfg.px  = Math.max(480, Math.min(1568, +$('px').value || 1280));
+  localStorage.setItem('vb.url', cfg.url);
+  localStorage.setItem('vb.tok', cfg.tok);
+  localStorage.setItem('vb.px',  cfg.px);
+  $('settings').close();
+  setState('idle','Ready');
+};
+
+$('ask').onclick = () => {
+  if(listening){ recog && recog.stop(); return; }   // tap again to cut it short
+  if(busy) return;
+  speechSynthesis.cancel();                          // barge in over an answer
+  startListening();
+};
+
+// A wired or Bluetooth headset's play/pause button reaches the page as a media
+// key. Mapping it to Ask is what makes this usable without touching the phone.
+if('mediaSession' in navigator){
+  try{
+    navigator.mediaSession.setActionHandler('play',  () => $('ask').click());
+    navigator.mediaSession.setActionHandler('pause', () => $('ask').click());
+  }catch(e){}
+}
+
+// Chrome suspends camera tracks in the background; re-acquire on return.
+document.addEventListener('visibilitychange', () => {
+  if(!document.hidden && (!cam.srcObject || !cam.srcObject.active)) startCamera();
+});
+
+startCamera();
+if(!cfg.tok) openSettings();
+</script>
+</body>
+</html>
