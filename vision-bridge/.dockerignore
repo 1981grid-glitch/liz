@@ -1,0 +1,25 @@
+# The Dockerfile COPYs requirements.txt, vision_bridge.py and client/.
+# Everything below is build-context weight only.
+# Do NOT add any of those three here.
+#
+# Same shape and same reason as throne-mcp/.dockerignore and
+# onenote-mcp/.dockerignore: `az acr build` uploads this directory as build
+# context, so anything not excluded ships to the registry to be thrown away.
+
+__pycache__/
+*.pyc
+*.pyo
+
+# A venv built for local testing is large, machine-specific, and must never
+# reach a build context. Listed here as well as in .gitignore because the two
+# mechanisms are independent.
+.venv/
+
+*.bak-*
+
+# Tests and tooling run on the workstation or in a session, never in the image.
+test_*.py
+probe_*.py
+
+*.md
+*.ps1
